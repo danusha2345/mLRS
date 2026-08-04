@@ -27,12 +27,13 @@
   требует аппаратного A/B.
 - `LIMITATION` — функция намеренно запрещена или не завершена; текущий
   production path защищён.
+- `FIXED` — исправление реализовано и прошло указанные в карточке проверки.
 
 ## Сводка
 
 | ID | P | Статус | Область | Краткое описание | Связь |
 |---|---:|---|---|---|---|
-| MLRS-001 | P0 | CONFIRMED | MAVLinkX | Decompression пишет за пределы 300-byte buffer до CRC | новый |
+| MLRS-001 | P0 | FIXED | MAVLinkX | Bounded decoder отклоняет overflow и malformed tokens | новый |
 | MLRS-002 | P0 | CONFIRMED | ARQ | Старый 1-bit ACK подтверждает другой 3-bit `seq_no` | PR #185 |
 | MLRS-003 | P0 | CONFIRMED | ARQ | Полный wrap скрывает потерю семи payload и parser reset | PR #185 |
 | MLRS-004 | P0 | CONFIRMED | RF RX | `CHECK_ERROR_SYNCWORD` навсегда останавливает receiver | issue #342 |
@@ -58,7 +59,7 @@
 ### MLRS-001 — небезопасная MAVLinkX decompression
 
 **Приоритет:** P0  
-**Статус:** CONFIRMED
+**Статус:** FIXED
 
 Доказательства:
 
@@ -91,6 +92,19 @@ Definition of done:
   максимального корректного payload;
 - ни один malformed input не пишет за пределы buffer;
 - корректные MAVLinkX frames остаются wire-compatible.
+
+Реализовано:
+
+- `_fmavX_payload_decompress()` принимает `out_capacity`, возвращает
+  success/error и проверяет каждую single-byte/RLE запись;
+- truncated/invalid/zero-length tokens отклоняются, а parser сбрасывается без
+  публикации partial payload;
+- [`tests/host/test_mavlinkx.cpp`](../tests/host/test_mavlinkx.cpp) проверяет
+  repeated RLE255, overflow после 255-го byte, truncated и invalid tokens,
+  максимальный payload и frame round-trip;
+- `tests/host/run_mavlinkx_tests.sh` проходит с ASan/UBSan;
+- PlatformIO firmware builds `rx-generic-2400` (ESP8266) и
+  `tx-radiomaster-rp4td-2400-sik-telem` (ESP32) проходят.
 
 ### MLRS-002 — stale ACK alias в ARQ
 

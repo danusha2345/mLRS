@@ -167,7 +167,7 @@ fmavx_status_t fmavx_status = {};
 
 #ifdef MAVLINKX_COMPRESSION
 uint8_t _fmavX_payload_compress(uint8_t* const payload_out, uint16_t* const len_out, const uint8_t* const payload, uint16_t len);
-void _fmavX_payload_decompress(uint8_t* const payload_out, uint16_t* const len_out, uint16_t len);
+uint8_t _fmavX_payload_decompress(uint8_t* const payload_out, uint16_t* const len_out, uint16_t len, uint16_t out_capacity);
 #endif
 
 
@@ -723,8 +723,17 @@ CHECKRANGEBUF(status->rx_cnt);
 
 #ifdef MAVLINKX_COMPRESSION
             if (fmavx_status.flags & MAVLINKX_FLAGS_IS_COMPRESSED) {
-                uint16_t len;
-                _fmavX_payload_decompress(&(buf[status->rx_header_len]), &len, fmavx_status.rx_payload_len);
+                uint16_t len = 0;
+                uint16_t compressed_len = fmavx_status.rx_payload_len;
+                if (!_fmavX_payload_decompress(&(buf[status->rx_header_len]), &len, compressed_len,
+                                               FASTMAVLINK_PAYLOAD_LEN_MAX) ||
+                    len <= compressed_len ||
+                    status->rx_frame_len + (len - compressed_len) > FASTMAVLINK_FRAME_LEN_MAX) {
+                    fmav_parse_reset(status);
+                    fmavX_status_reset(&fmavx_status);
+                    result->res = FASTMAVLINK_PARSE_RESULT_NONE;
+                    return FASTMAVLINK_PARSE_RESULT_NONE;
+                }
                 uint16_t delta_len = (len - fmavx_status.rx_payload_len);
                 status->rx_cnt += delta_len;
                 fmavx_status.rx_payload_len += delta_len;
@@ -1028,9 +1037,14 @@ uint8_t fmavx_in_buf[300];
 
 uint8_t _fmavX_decode_get_bits(uint8_t* const code, uint16_t len, uint8_t bits_len)
 {
+    uint16_t in_pos = fmavx_status.in_pos;
+    uint8_t in_bit = fmavx_status.in_bit;
+
     *code = 0;
     for (uint8_t i = 0; i < bits_len; i++) {
         if (fmavx_status.in_pos >= len) { // reached end
+            fmavx_status.in_pos = in_pos;
+            fmavx_status.in_bit = in_bit;
             return 0;
         }
         *code <<= 1;
@@ -1079,11 +1093,46 @@ CHECKRANGE(fmavx_status.in_pos,258);
 #endif // MAVLINKX_DECODE_BITBUFFER_ENABLE
 
 
-void _fmavX_payload_decompress(uint8_t* const payload_out, uint16_t* const len_out, uint16_t len)
+uint8_t _fmavX_decode_padding_only(uint16_t len)
 {
-    memcpy(fmavx_in_buf, payload_out, len); // copy current payload into work buffer
+#ifdef MAVLINKX_DECODE_BITBUFFER_ENABLE
+    uint16_t remaining_bits = fmavx_status.bit_cnt + 8 * (len - fmavx_status.in_pos);
+    if (remaining_bits > 7) return 0;
 
+    if (fmavx_status.bit_cnt) {
+        uint32_t mask = ((uint32_t)1 << fmavx_status.bit_cnt) - 1;
+        if ((fmavx_status.bit_buf & mask) != mask) return 0;
+    }
+    for (uint16_t pos = fmavx_status.in_pos; pos < len; pos++) {
+        if (fmavx_in_buf[pos] != 0xFF) return 0;
+    }
+#else
+    uint16_t remaining_bits = 0;
+    uint16_t in_pos = fmavx_status.in_pos;
+    uint8_t in_bit = fmavx_status.in_bit;
+
+    while (in_pos < len) {
+        remaining_bits++;
+        if (!(fmavx_in_buf[in_pos] & in_bit)) return 0;
+        in_bit >>= 1;
+        if (!in_bit) {
+            in_pos++;
+            in_bit = 0x80;
+        }
+    }
+    if (remaining_bits > 7) return 0;
+#endif
+
+    return 1;
+}
+
+
+uint8_t _fmavX_payload_decompress(uint8_t* const payload_out, uint16_t* const len_out, uint16_t len, uint16_t out_capacity)
+{
     *len_out = 0;
+    if (len > sizeof(fmavx_in_buf)) return 0;
+
+    memcpy(fmavx_in_buf, payload_out, len); // copy current payload into work buffer
 
     fmavx_status.in_pos = 0;
     fmavx_status.in_bit = 0x80;
@@ -1096,77 +1145,95 @@ CHECKRANGE(len,258);
         uint8_t c;
 
         // get next code
-        uint8_t code = MAVLINKX_CODE_UNDEFINED;
+        uint8_t code;
 
-        if (_fmavX_decode_get_bits(&c, len, 2)) {
-            if (c == 0b10) { // 10
-                code = MAVLINKX_CODE_1_64;
-            } else
-            if (c == 0b11) { // 11
-                code = MAVLINKX_CODE_191_254;
-            } else
-            if (c == 0b01) { // 01
-                code = MAVLINKX_CODE_65_190;
-            } else // 00
-            if (_fmavX_decode_get_bits(&c, len, 1)) {
-                if (c == 0b0) { // 000
-                    code = MAVLINKX_CODE_0;
-                } else // 001
-                if (_fmavX_decode_get_bits(&c, len, 1)) {
-                    if (c == 0b0) { // 0010
-                        code = MAVLINKX_CODE_255;
-                    } else // 0011
-                    if (_fmavX_decode_get_bits(&c, len, 1)) {
-                        if (c == 0b0) { // 00110
-                            code = MAVLINKX_CODE_0_RLE;
-                        } else { // 00111
-                            code = MAVLINKX_CODE_255_RLE;
-                        }
+        if (!_fmavX_decode_get_bits(&c, len, 2)) {
+            if (_fmavX_decode_padding_only(len)) return 1;
+            goto decode_error;
+        }
+        if (c == 0b10) { // 10
+            code = MAVLINKX_CODE_1_64;
+        } else
+        if (c == 0b11) { // 11
+            code = MAVLINKX_CODE_191_254;
+        } else
+        if (c == 0b01) { // 01
+            code = MAVLINKX_CODE_65_190;
+        } else { // 00
+            if (!_fmavX_decode_get_bits(&c, len, 1)) goto decode_error;
+            if (c == 0b0) { // 000
+                code = MAVLINKX_CODE_0;
+            } else { // 001
+                if (!_fmavX_decode_get_bits(&c, len, 1)) goto decode_error;
+                if (c == 0b0) { // 0010
+                    code = MAVLINKX_CODE_255;
+                } else { // 0011
+                    if (!_fmavX_decode_get_bits(&c, len, 1)) goto decode_error;
+                    if (c == 0b0) { // 00110
+                        code = MAVLINKX_CODE_0_RLE;
+                    } else { // 00111
+                        code = MAVLINKX_CODE_255_RLE;
                     }
                 }
             }
         }
 
-        if (code == MAVLINKX_CODE_UNDEFINED) return; // end
-
         switch (code) {
             case MAVLINKX_CODE_0:
 CHECKRANGE(*len_out,256);
+                if (*len_out >= out_capacity) goto decode_error;
                 payload_out[(*len_out)++] = 0x00;
                 break;
             case MAVLINKX_CODE_255:
 CHECKRANGE(*len_out,256);
+                if (*len_out >= out_capacity) goto decode_error;
                 payload_out[(*len_out)++] = 0xFF;
                 break;
             case MAVLINKX_CODE_0_RLE:
-                if (!_fmavX_decode_get_bits(&c, len, 8)) return; // end
+                if (!_fmavX_decode_get_bits(&c, len, 8)) goto decode_error;
+                if (!c) goto decode_error;
 CHECKRANGE(*len_out+c,256);
+                if (*len_out > out_capacity || c > out_capacity - *len_out) goto decode_error;
                 memset(&payload_out[*len_out], 0, c);
                 *len_out += c;
                 break;
             case MAVLINKX_CODE_255_RLE:
-                if (!_fmavX_decode_get_bits(&c, len, 8)) return; // end
+                if (!_fmavX_decode_get_bits(&c, len, 8)) goto decode_error;
+                if (!c) goto decode_error;
 CHECKRANGE(*len_out+c,256);
+                if (*len_out > out_capacity || c > out_capacity - *len_out) goto decode_error;
                 memset(&payload_out[*len_out], 0xFF, c);
                 *len_out += c;
                 break;
             case MAVLINKX_CODE_1_64:
-                 if (!_fmavX_decode_get_bits(&c, len, 6)) return; // end
-                 payload_out[(*len_out)++] = c + 1;
+                if (!_fmavX_decode_get_bits(&c, len, 6)) goto decode_error;
+                if (*len_out >= out_capacity) goto decode_error;
+                payload_out[(*len_out)++] = c + 1;
                 break;
             case MAVLINKX_CODE_191_254:
-                 if (!_fmavX_decode_get_bits(&c, len, 6)) return; // end
+                if (!_fmavX_decode_get_bits(&c, len, 6)) {
+                    if (_fmavX_decode_padding_only(len)) return 1;
+                    goto decode_error;
+                }
 CHECKRANGE(*len_out,256);
-                 payload_out[(*len_out)++] = c + 191;
+                if (*len_out >= out_capacity) goto decode_error;
+                payload_out[(*len_out)++] = c + 191;
                 break;
             case MAVLINKX_CODE_65_190:
-                if (!_fmavX_decode_get_bits(&c, len, 7)) return; // end
-                if (c > 125) return; // invalid token, so just jump out
+                if (!_fmavX_decode_get_bits(&c, len, 7)) goto decode_error;
+                if (c > 125) goto decode_error;
 CHECKRANGE(*len_out,256);
+                if (*len_out >= out_capacity) goto decode_error;
                 payload_out[(*len_out)++] = c + 65;
                 break;
+            case MAVLINKX_CODE_UNDEFINED:
+                goto decode_error;
         }
     }
+
+decode_error:
+    *len_out = 0;
+    return 0;
 }
 
 
@@ -1181,4 +1248,3 @@ CHECKRANGE(*len_out,256);
 
 
 #endif // MAVLINKX_H
-
