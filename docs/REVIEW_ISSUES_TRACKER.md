@@ -47,7 +47,7 @@
 | MLRS-008 | P1 | IMPLEMENTED | RF IRQ | Saturating pending counter передаёт IRQ из ISR атомарно | новый |
 | MLRS-009 | P1 | PARTIAL | TCP bridge | Blocking/partial `client.write()` переполняет UART RX | issue #478 |
 | MLRS-010 | P1 | PARTIAL | WLE5 timing | MAVLink/MSP loops не имеют byte/time budget | issue #283 |
-| MLRS-011 | P1 | CONFIRMED | FIFO/UART | Frame silently обрезается при заполнении очереди | новый |
+| MLRS-011 | P1 | IN_PROGRESS | FIFO/UART | `tFifo` принимает frame целиком либо полностью отбрасывает | новый |
 | MLRS-012 | P1 | FIXED | ARQ | Adaptive retry thresholds больше не затираются значением 1 | новый |
 | MLRS-013 | P1 | IMPLEMENTED | ARQ | Retry budget вычисляется только для fresh payload | новый |
 | MLRS-014 | P1 | CONFIRMED | Bridge UART | Ошибка выделения RX/TX buffer игнорируется | issue #478 class |
@@ -437,7 +437,7 @@ Definition of done:
 ### MLRS-011 — silent partial frame enqueue
 
 **Приоритет:** P1  
-**Статус:** CONFIRMED
+**Статус:** IN_PROGRESS
 
 `tFifo::PutBuf()` игнорирует неуспешный `Put()`:
 [`fifo.h:31`](../mLRS/Common/libs/fifo.h#L31). STM32 `uart_putbuf()` аналогично
@@ -453,6 +453,20 @@ stream.
 
 Definition of done: для всех fill levels frame либо помещается полностью, либо
 не меняет FIFO; partial prefix невозможен.
+
+Реализовано в parent repo:
+
+- `tFifo::PutBuf()` сначала проверяет capacity и возвращает `bool`; при нехватке
+  места FIFO и существующие данные не меняются;
+- отказ `Put()`/`PutBuf()` увеличивает saturating `OverflowCount()`, который
+  сбрасывается вместе с FIFO через `Init()`;
+- ASan/UBSan host regression перебирает все fill levels малой очереди,
+  oversized frames и wraparound, проверяя контракт all-or-nothing и порядок.
+
+Открыто: STM32 `uart_putbuf()` находится в отдельном submodule
+`mLRS/modules/stm32ll-lib`. Для полного `IMPLEMENTED` нужен отдельный commit в
+этом submodule и обновление pointer в parent repo; до этого прямой STM32 UART
+path всё ещё может частично поставить frame.
 
 ### MLRS-012 — adaptive retry всегда равен одному
 
@@ -672,7 +686,7 @@ Definition of done: эти suites являются required PR checks, а hardwa
 - source regressions запрещают radio/SPI work в DIO ISR, fatal sync mismatch,
   очистку непрочитанных IRQ bits и бесконечные BUSY waits.
 
-Открыто: frame/FIFO suites, required PR checks, полный bridge/STM32 build
+Открыто: frame suites, required PR checks, полный bridge/STM32 build
 coverage и hardware/timing tests из минимальной программы выше.
 
 ## Исправленные или недоказанные первоначальные выводы

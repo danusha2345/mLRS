@@ -26,6 +26,7 @@ class tFifo
     {
         writepos = readpos = 0;
         SIZEMASK = FIFO_SIZE - 1;
+        overflow_count = 0;
     }
 
     bool Put(T c)
@@ -36,12 +37,23 @@ class tFifo
             writepos = next;
             return true;
         }
+        CountOverflow();
         return false;
     }
 
-    void PutBuf(void* const buf, uint16_t len)
+    bool PutBuf(const void* const data, uint16_t len)
     {
-        for (uint16_t i = 0; i < len; i++) Put(((T*)buf)[i]);
+        if (!HasSpace(len)) {
+            CountOverflow();
+            return false;
+        }
+
+        const T* const data_t = (const T*)data;
+        for (uint16_t i = 0; i < len; i++) {
+            buf[writepos] = data_t[i];
+            writepos = (writepos + 1) & SIZEMASK;
+        }
+        return true;
     }
 
     uint16_t Available(void)
@@ -53,8 +65,11 @@ class tFifo
 
     bool HasSpace(uint16_t space)
     {
-        return (Available() < (FIFO_SIZE - space));
+        if (space >= FIFO_SIZE) return false;
+        return Available() <= (FIFO_SIZE - 1 - space);
     }
+
+    uint32_t OverflowCount(void) const { return overflow_count; }
 
     bool IsFull(void)
     {
@@ -77,9 +92,15 @@ class tFifo
     }
 
   private:
+    void CountOverflow(void)
+    {
+        if (overflow_count < UINT32_MAX) overflow_count++;
+    }
+
     uint16_t writepos; // pos at which the next byte will be stored
     uint16_t readpos; // pos at which the oldest byte is fetched
     uint16_t SIZEMASK;
+    uint32_t overflow_count;
     T buf[FIFO_SIZE];
 };
 
