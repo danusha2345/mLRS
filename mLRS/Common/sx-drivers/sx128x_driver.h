@@ -97,6 +97,7 @@ class Sx128xDriverCommon : public Sx128xDriverBase
         gconfig = nullptr;
         lora_configuration = nullptr;
         flrc_configuration = nullptr;
+        busy_timed_out = false;
     }
 
     //-- high level API functions
@@ -106,6 +107,15 @@ class Sx128xDriverCommon : public Sx128xDriverBase
         uint16_t firmwareRev = GetFirmwareRev();
         return ((firmwareRev != 0) && (firmwareRev != 65535));
     }
+
+    uint32_t GetAndClearIrqStatusSafe(uint32_t IrqMask)
+    {
+        uint16_t irq_status = GetIrqStatus();
+        ClearIrqStatus(irq_status & IrqMask);
+        return irq_status;
+    }
+
+    bool BusyTimedOut(void) const { return busy_timed_out; }
 
     void SetLoraConfiguration(const tSxLoraConfiguration* const config)
     {
@@ -318,6 +328,8 @@ class Sx128xDriverCommon : public Sx128xDriverBase
 
   protected:
     tSxGlobalConfig* gconfig;
+    bool busy_timed_out;
+    void SetBusyTimeout(void) { busy_timed_out = true; }
 
   private:
     const tSxLoraConfiguration* lora_configuration;
@@ -356,7 +368,15 @@ class Sx128xDriver : public Sx128xDriverCommon
 
     void WaitOnBusy(void) override
     {
-        while (sx_busy_read()) { __NOP(); };
+        if (BusyTimedOut()) return;
+        uint16_t tstart_us = micros16();
+        while (sx_busy_read()) {
+            if ((uint16_t)(micros16() - tstart_us) >= SX_BUSY_TIMEOUT_US) {
+                SetBusyTimeout();
+                return;
+            }
+            __NOP();
+        }
     }
 
     void SpiSelect(void) override
@@ -490,7 +510,15 @@ class Sx128xDriver2 : public Sx128xDriverCommon
 
     void WaitOnBusy(void) override
     {
-        while (sx2_busy_read()) { __NOP(); };
+        if (BusyTimedOut()) return;
+        uint16_t tstart_us = micros16();
+        while (sx2_busy_read()) {
+            if ((uint16_t)(micros16() - tstart_us) >= SX_BUSY_TIMEOUT_US) {
+                SetBusyTimeout();
+                return;
+            }
+            __NOP();
+        }
     }
 
     void SpiSelect(void) override

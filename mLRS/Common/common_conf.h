@@ -129,6 +129,8 @@
 #define MODE_FLRC_111HZ_SEND_FRAME_TMO_MS     7  // just needs to be larger than toa, not critical
 #define MODE_FSK_50HZ_SEND_FRAME_TMO_MS       10 // just needs to be larger than toa, not critical
 
+#define SX_BUSY_TIMEOUT_US                     20000
+
 
 #define FHSS_NUM_433_MHZ                2  // 2 since 1 is needed for bind
 #define FHSS_NUM_70_CM_HAM              18 // to match 2.4 GHz at 31 Hz
@@ -171,4 +173,3 @@
 
 
 #endif // COMMON_CONFIG_H
-

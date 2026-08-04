@@ -40,11 +40,11 @@
 | MLRS-001 | P0 | FIXED | MAVLinkX | Bounded decoder отклоняет overflow и malformed tokens | новый |
 | MLRS-002 | P0 | IMPLEMENTED | ARQ | Полный 3-bit ACK и resync marker исключают stale-ACK alias | PR #185 |
 | MLRS-003 | P0 | IMPLEMENTED | ARQ | Marked resync принимается после modulo wrap и сбрасывает parser | PR #185 |
-| MLRS-004 | P0 | CONFIRMED | RF RX | `CHECK_ERROR_SYNCWORD` навсегда останавливает receiver | issue #342 |
-| MLRS-005 | P0 | CONFIRMED | ESP RF ISR | SPI-команды из ISR способны вызвать interrupt watchdog | issue #342 |
+| MLRS-004 | P0 | IMPLEMENTED | RF RX | Sync mismatch отбрасывается; серия ошибок запускает bounded reinit | issue #342 |
+| MLRS-005 | P0 | IMPLEMENTED | ESP RF ISR | ISR публикует pending event; radio/SPI work выполняется в main | issue #342 |
 | MLRS-006 | P0 | IMPLEMENTED | UDP bridge | Datagram полностью вычитывается чанками во всех UDP handlers | новый |
-| MLRS-007 | P1 | CONFIRMED | RF recovery | Fatal делает recovery после stale/unexpected IRQ недостижимым | issue #342 |
-| MLRS-008 | P1 | CONFIRMED | RF IRQ | Неатомарный `volatile irq_status` способен терять IRQ | новый |
+| MLRS-007 | P1 | IMPLEMENTED | RF recovery | Unexpected IRQ переводит state machine в безопасное состояние | issue #342 |
+| MLRS-008 | P1 | IMPLEMENTED | RF IRQ | Saturating pending counter передаёт IRQ из ISR атомарно | новый |
 | MLRS-009 | P1 | PARTIAL | TCP bridge | Blocking/partial `client.write()` переполняет UART RX | issue #478 |
 | MLRS-010 | P1 | PARTIAL | WLE5 timing | MAVLink/MSP loops не имеют byte/time budget | issue #283 |
 | MLRS-011 | P1 | CONFIRMED | FIFO/UART | Frame silently обрезается при заполнении очереди | новый |
@@ -203,7 +203,8 @@ Definition of done:
 ### MLRS-004 — permanent halt на sync-word mismatch
 
 **Приоритет:** P0  
-**Статус:** CONFIRMED  
+**Статус:** IMPLEMENTED
+
 **GitHub:** [issue #342](https://github.com/olliw42/mLRS/issues/342)
 
 RX вызывает `FAIL_WMSG` при `CHECK_ERROR_SYNCWORD`:
@@ -223,10 +224,27 @@ Definition of done:
 - 100–1000 hardware attenuation/link-loss cycles завершаются повторным
   `CONNECTED` без reboot.
 
+Реализовано:
+
+- RX и TX больше не вызывают `FAIL_WMSG` при `CHECK_ERROR_SYNCWORD`: frame
+  отбрасывается как invalid, а диагностический счётчик ошибки увеличивается;
+- успешный `RX_DONE`/`TX_DONE` сбрасывает consecutive streak, три ошибки подряд
+  запрашивают полную переинициализацию соответствующих radio в main context;
+- reinitialization имеет конечные BUSY waits и возвращает управление main loop
+  как при успехе, так и при аппаратной ошибке;
+- после неудачной переинициализации следующая попытка откладывается на 1 s,
+  поэтому постоянная hardware fault не превращается в tight recovery loop;
+- host test проверяет порог `3`, reset streak после успеха и сохранение общего
+  счётчика; source regression запрещает возврат fatal в `do_receive()`.
+
+Осталось до `FIXED`: hardware attenuation/link-loss suite из Definition of
+done с сохранёнными recovery counters и exact firmware hash.
+
 ### MLRS-005 — SPI/radio work в ESP ISR
 
 **Приоритет:** P0  
-**Статус:** CONFIRMED  
+**Статус:** IMPLEMENTED
+
 **GitHub:** [issue #342](https://github.com/olliw42/mLRS/issues/342)
 
 DIO ISR выполняет `GetAndClearIrqStatus()` и `ReadBuffer()` через shared SPI:
@@ -250,6 +268,21 @@ Definition of done:
 - instrumented DIO handler не выполняет SPI;
 - stuck BUSY/SPI fault завершается bounded recovery;
 - одновременные DIO1/DIO2 events не теряются.
+
+Реализовано:
+
+- DIO ISR очищает только MCU EXTI flag и увеличивает saturating pending counter;
+- чтение/очистка hardware IRQ, проверка prefix и чтение radio buffer перенесены
+  в main context;
+- `SX128x`, `SX126x`, `LR11xx` и `LR20xx` BUSY waits ограничены 20 ms и
+  защёлкивают timeout вместо бесконечного ожидания;
+- BUSY timeout запрашивает `Init()`/`StartUp()` radio в main context, не
+  останавливая firmware навсегда;
+- source regression проверяет отсутствие radio/SPI/config операций в четырёх
+  RX/TX DIO handlers, а ESP8266 и ESP32 firmware builds проходят.
+
+Осталось до `FIXED`: instrumented hardware fault injection для DIO и stuck
+BUSY; STM32 compile/runtime validation требует установленного toolchain.
 
 ### MLRS-006 — UDP RX wedge после datagram >256 bytes
 
@@ -297,7 +330,7 @@ Definition of done:
 ### MLRS-007 — недостижимый recovery после unexpected IRQ
 
 **Приоритет:** P1  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
 В нескольких ветках сначала вызывается fatal, а ниже расположен код очистки
 IRQ и восстановления state:
@@ -310,10 +343,23 @@ IRQ и восстановления state:
 Definition of done: stale `RX_DONE`, `TX_DONE` и `TIMEOUT` fault injection
 очищает IRQ, переармирует radio и не вызывает fatal.
 
+Реализовано:
+
+- ожидаемые IRQ bits потребляются отдельно, а любой остаток учитывается как
+  recoverable radio error без `FAIL`;
+- RX возвращается в `RECEIVE`, TX — в `IDLE`, после чего radio переармируется
+  штатной state machine;
+- после трёх consecutive errors выполняется bounded radio reinitialization;
+  total/reinit/failure counters остаются доступными в debugger и готовы для
+  последующего вывода в telemetry.
+
+Осталось до `FIXED`: аппаратная fault injection для stale `RX_DONE`, `TX_DONE`
+и `TIMEOUT` на single- и dual-radio targets.
+
 ### MLRS-008 — потеря IRQ из-за read/process/clear race
 
 **Приоритет:** P1  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
 ISR присваивает новое значение `irq_status`, main loop отдельно читает и затем
 обнуляет его. `volatile` не делает эту последовательность атомарной. IRQ,
@@ -324,6 +370,20 @@ ISR присваивает новое значение `irq_status`, main loop �
 
 Definition of done: stress test одновременных и повторных DIO events не теряет
 ни одного события и не приводит state machine в невозможное состояние.
+
+Реализовано:
+
+- ISR использует отдельный saturating `uint8_t` counter на каждое radio;
+- main забирает counter атомарно: ESP32 через critical mux, ESP8266 через
+  `noInterrupts()`/`interrupts()`, STM32 через IRQ disable/enable;
+- hardware IRQ очищается только по прочитанному snapshot, поэтому новый
+  отличный IRQ bit не стирается маской `ALL`;
+- host regression проверяет накопление, однократный drain и saturation без
+  wrap; source regression проверяет snapshot-clear для radio wrappers.
+
+Осталось до `FIXED`: аппаратный DIO burst/stress на single- и dual-radio
+targets. Счётчик предотвращает software race, но не обещает очередность двух
+одинаковых hardware bits внутри одного radio IRQ latch.
 
 ### MLRS-009 — TCP backpressure и starvation
 
@@ -607,7 +667,10 @@ Definition of done: эти suites являются required PR checks, а hardwa
   fail-fast запускает Python discovery и sanitizer suites;
 - host regression покрывает malformed/overflow MAVLinkX, UDP datagram drain,
   ARQ state/property invariants, generator exit semantics, non-interactive
-  setup и STM32 build failure propagation.
+  setup, STM32 build failure propagation, атомарный IRQ handoff и recovery
+  threshold;
+- source regressions запрещают radio/SPI work в DIO ISR, fatal sync mismatch,
+  очистку непрочитанных IRQ bits и бесконечные BUSY waits.
 
 Открыто: frame/FIFO suites, required PR checks, полный bridge/STM32 build
 coverage и hardware/timing tests из минимальной программы выше.
@@ -627,7 +690,7 @@ coverage и hardware/timing tests из минимальной программы
 
 ## Рекомендуемый порядок работ
 
-1. MLRS-005, MLRS-004, MLRS-007, MLRS-008: ISR/recovery redesign.
+1. Hardware validation MLRS-004/005/007/008 ISR/recovery redesign.
 2. Hardware validation MLRS-002/003 ARQ и MLRS-006 UDP draining.
 3. MLRS-011 и MLRS-014: atomic buffering и observable overflow.
 4. MLRS-010: WLE5 execution budgets и timing proof.

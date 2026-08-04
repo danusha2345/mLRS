@@ -90,6 +90,16 @@ class Sx127xDriverCommon : public Sx127xDriverBase
         return (firmwareRev == 0x12);
     }
 
+    uint32_t GetAndClearIrqStatusSafe(uint32_t IrqMask)
+    {
+        uint16_t irq_status = GetIrqStatus();
+        ClearIrqStatus(irq_status & IrqMask);
+        SetStandby(); // avoids corruption of received data after receive IRQ
+        return irq_status;
+    }
+
+    bool BusyTimedOut(void) const { return false; }
+
     void SetLoraConfiguration(const tSxLoraConfiguration* const config)
     {
         SetModulationParams(config->SpreadingFactor,

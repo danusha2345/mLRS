@@ -133,6 +133,8 @@ class SxDriverDummy
     void SetRfPower_dbm(int8_t power_dbm) {}
     void UpdateRfPower(tSxGlobalConfig* const global_config) {}
     void ClearIrqStatus(uint32_t IrqMask) {}
+    uint32_t GetAndClearIrqStatusSafe(uint32_t IrqMask) { return 0; }
+    bool BusyTimedOut(void) const { return false; }
 
     int16_t ReceiverSensitivity_dbm(void) { return 0; }
     int8_t RfPower_dbm(void) { return INT8_MIN; }
