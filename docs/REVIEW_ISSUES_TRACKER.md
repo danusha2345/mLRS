@@ -6,8 +6,8 @@
 - ESP build matrix после генерации fastMAVLink: 32/32 конфигурации успешно.
 - STM32 matrix не собиралась из-за отсутствия toolchain; отдельно проверена
   семантика build scripts.
-- Этот файл фиксирует дефекты и критерии закрытия. Он не утверждает, что
-  перечисленные исправления уже реализованы.
+- Доказательства относятся к исходному снимку; статусы `IMPLEMENTED` и `FIXED`
+  ниже отражают последующие изменения в рабочей ветке.
 
 ## Обозначения
 
@@ -27,6 +27,8 @@
   требует аппаратного A/B.
 - `LIMITATION` — функция намеренно запрещена или не завершена; текущий
   production path защищён.
+- `IMPLEMENTED` — исправление и автоматические проверки реализованы, но часть
+  platform/hardware validation из Definition of done ещё не выполнена.
 - `FIXED` — исправление реализовано и прошло указанные в карточке проверки.
 
 ## Сводка
@@ -38,7 +40,7 @@
 | MLRS-003 | P0 | CONFIRMED | ARQ | Полный wrap скрывает потерю семи payload и parser reset | PR #185 |
 | MLRS-004 | P0 | CONFIRMED | RF RX | `CHECK_ERROR_SYNCWORD` навсегда останавливает receiver | issue #342 |
 | MLRS-005 | P0 | CONFIRMED | ESP RF ISR | SPI-команды из ISR способны вызвать interrupt watchdog | issue #342 |
-| MLRS-006 | P0 | CONFIRMED | UDP bridge | Datagram >256 bytes навсегда блокирует UDP RX на ESP32 | новый |
+| MLRS-006 | P0 | IMPLEMENTED | UDP bridge | Datagram полностью вычитывается чанками во всех UDP handlers | новый |
 | MLRS-007 | P1 | CONFIRMED | RF recovery | Fatal делает recovery после stale/unexpected IRQ недостижимым | issue #342 |
 | MLRS-008 | P1 | CONFIRMED | RF IRQ | Неатомарный `volatile irq_status` способен терять IRQ | новый |
 | MLRS-009 | P1 | PARTIAL | TCP bridge | Blocking/partial `client.write()` переполняет UART RX | issue #478 |
@@ -224,7 +226,7 @@ Definition of done:
 ### MLRS-006 — UDP RX wedge после datagram >256 bytes
 
 **Приоритет:** P0  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
 Bridge использует 256-byte buffer:
 [`mlrs-wireless-bridge.ino:1272`](../esp/mlrs-wireless-bridge/mlrs-wireless-bridge.ino#L1272),
@@ -247,6 +249,22 @@ Definition of done:
 - tests для datagram 256, 257, 280 и 1460 bytes;
 - следующий heartbeat принимается после каждого тестового пакета;
 - проверены ESP32 core 3.3.10 и ESP8266.
+
+Реализовано:
+
+- `udp_read_datagram_to_serial()` вычитывает ровно весь `packetSize` чанками
+  рабочего buffer и передаёт каждый chunk в UART;
+- общий helper используется в `UDP`, `UDPSTA` и `UDPCl`, поэтому unread tail не
+  остаётся в ESP32 `rx_buffer`;
+- [`tests/host/test_udp_drain.cpp`](../tests/host/test_udp_drain.cpp) моделирует
+  ESP32 wedge и проверяет datagram 256, 257, 280 и 1460 bytes, следующий
+  heartbeat и partial reads;
+- host test проходит с ASan/UBSan;
+- `pio ci` успешно собирает default UDP для ESP32 Arduino core 3.3.8 и ESP8266
+  core 3.1.2; отдельная ESP32 AT-mode сборка включает все три UDP handlers.
+
+Осталось до `FIXED`: прогон на ESP32 core 3.3.10 и hardware/network smoke с
+реальными UDP datagrams.
 
 ### MLRS-007 — недостижимый recovery после unexpected IRQ
 

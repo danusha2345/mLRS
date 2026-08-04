@@ -281,6 +281,7 @@ WiFiClient client;
 // UDP, UDPSTA, UDPCl
 #if defined USE_WIRELESS_PROTOCOL_UDP || defined USE_WIRELESS_PROTOCOL_UDPSTA || defined USE_WIRELESS_PROTOCOL_UDPCL
 WiFiUDP udp;
+#include "udp-drain.h"
 #endif
 // Bluetooth
 #ifdef USE_WIRELESS_PROTOCOL_BLUETOOTH
@@ -874,10 +875,7 @@ class tUDPHandler : public tWifiHandler, tClientList {
     void Loop(uint8_t* buf, int sizeofbuf) override {
         int packetSize = udp.parsePacket();
         if (packetSize > 0) {
-            int len = udp.read(buf, sizeofbuf);
-            if (len > 0) { // let's assume that this is the GCS, so forward
-                SERIAL.write(buf, len);
-            }
+            int len = udp_read_datagram_to_serial(udp, SERIAL, buf, sizeofbuf, packetSize);
             Add(udp.remoteIP(), udp.remotePort(), (len > 0)); // true if it's from a GCS
             set_connected(); // should we indicate connected only if we have seen a GCS?
         }
@@ -939,8 +937,7 @@ class tUDPSTAHandler : public tWifiHandler {
 
         int packetSize = udp.parsePacket();
         if (packetSize > 0) {
-            int len = udp.read(buf, sizeofbuf);
-            SERIAL.write(buf, len);
+            udp_read_datagram_to_serial(udp, SERIAL, buf, sizeofbuf, packetSize);
             if (!is_connected) { // first received UDP packet
                 _ip = udp.remoteIP(); // stop broadcast, switch to unicast to avoid Aurdino performance issue
                 _port = udp.remotePort();
@@ -988,8 +985,7 @@ class tUDPClHandler : public tWifiHandler {
     void Loop(uint8_t* buf, int sizeofbuf)  override {
         int packetSize = udp.parsePacket();
         if (packetSize > 0) {
-            int len = udp.read(buf, sizeofbuf);
-            SERIAL.write(buf, len);
+            udp_read_datagram_to_serial(udp, SERIAL, buf, sizeofbuf, packetSize);
             set_connected();
         }
 
@@ -1279,4 +1275,3 @@ void loop()
 
     delay(2); // give it always a bit of time
 }
-
