@@ -27,6 +27,8 @@
   требует аппаратного A/B.
 - `LIMITATION` — функция намеренно запрещена или не завершена; текущий
   production path защищён.
+- `IN_PROGRESS` — часть исправления проверена и зафиксирована, но открытая
+  часть Definition of done ещё требует реализации или выбора policy.
 - `IMPLEMENTED` — исправление и автоматические проверки реализованы, но часть
   platform/hardware validation из Definition of done ещё не выполнена.
 - `FIXED` — исправление реализовано и прошло указанные в карточке проверки.
@@ -49,7 +51,7 @@
 | MLRS-012 | P1 | CONFIRMED | ARQ | `SetRetryCntAuto()` всегда оставляет один retry | новый |
 | MLRS-013 | P1 | CONFIRMED | ARQ | Retry budget меняется во время жизни одного payload | новый |
 | MLRS-014 | P1 | CONFIRMED | Bridge UART | Ошибка выделения RX/TX buffer игнорируется | issue #478 class |
-| MLRS-015 | P2 | CONFIRMED | Setup | `run_setup.py` не работает non-interactively и не описывает deps | PR #228 |
+| MLRS-015 | P2 | IN_PROGRESS | Setup | Non-interactive path исправлен; dependency policy ещё не выбрана | PR #228 |
 | MLRS-016 | P2 | FIXED | Generator | Exception печатается в stderr и завершает generator с code 1 | новый |
 | MLRS-017 | P2 | IMPLEMENTED | STM32 build | Fail-fast для compile/link/size/objcopy и проверка artifacts | новый |
 | MLRS-018 | P2 | CONFIRMED | CI | На `main` нет CI; PR #155 не является рабочим PR check | PR #155 |
@@ -412,10 +414,10 @@ degraded mode с counters/меньшим baud rate, либо прекращае�
 ### MLRS-015 — `run_setup.py` не автоматизируем
 
 **Приоритет:** P2  
-**Статус:** CONFIRMED  
+**Статус:** IN_PROGRESS
 **GitHub:** [PR #228](https://github.com/olliw42/mLRS/pull/228)
 
-Проблемы:
+Проблемы исходного снимка:
 
 - default setup падает на отсутствующем Python module `em`;
 - dependencies не зафиксированы в requirements/lock file;
@@ -430,6 +432,22 @@ wrapper добавляет venv Python перед командой, котора
 
 Definition of done: чистый Linux/Windows runner выполняет setup без ввода,
 использует pinned dependencies и возвращает корректный exit code.
+
+Реализовано:
+
+- child scripts запускаются тем же `sys.executable`, которым запущен setup,
+  поэтому venv/interpreter не теряется;
+- при non-TTY setup больше не вызывает `input()`; для интерактивного запуска
+  добавлен явный `--no-pause`/`-np`;
+- child failure завершается через `sys.exit(1)` без попытки читать закрытый
+  stdin;
+- [`tests/host/test_run_setup.py`](../tests/host/test_run_setup.py) проверяет
+  interpreter propagation, non-interactive success и failure paths.
+
+Открыто: выбрать dependency policy (root pinned requirements, автоматически
+создаваемый venv или только validation существующего environment), после чего
+проверить clean Linux/Windows setup. Текущий DroneCAN generator импортирует
+`empy`, `pexpect` и внешний package `dronecan`; pin-ы для них не выбраны.
 
 ### MLRS-016 — generator сообщает успех после exception
 
