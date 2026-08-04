@@ -327,6 +327,7 @@ uint8_t payload_len = 0;
     tFrameStats frame_stats;
     frame_stats.seq_no = tarq.SeqNo();
     frame_stats.ack = 1; // TODO
+    frame_stats.arq_discontinuity = tarq.PayloadDiscontinuity();
     frame_stats.antenna = stats.last_antenna;
     frame_stats.transmit_antenna = antenna;
     frame_stats.rssi = stats.GetLastRssi();
@@ -353,7 +354,6 @@ uint8_t payload_len = 0;
         rxFrame_valid = true;
 
         stats.cntFrameSkipped();
-        tarq.SetRetryCntAuto(stats.GetFrameCnt(), Config.Mode);
     }
 }
 
@@ -379,7 +379,7 @@ void process_received_frame(bool do_payload, tTxFrame* const frame)
     rcdata_from_txframe(&rcData, frame);
 
     // handle cmd frame
-    if (frame->status.frame_type == FRAME_TYPE_TX_RX_CMD) {
+    if (frame_type_value(frame->status.frame_type) == FRAME_TYPE_TX_RX_CMD) {
         process_received_txcmdframe(frame);
         return;
     }
@@ -421,7 +421,9 @@ tTxFrame* frame;
 
     // handle transmit ARQ
     if (rx_status > RX_STATUS_INVALID) { // RX_STATUS_CRC1_VALID, RX_STATUS_VALID: we have valid information on ack
-        tarq.AckReceived(frame->status.ack);
+        tarq.AckReceived(
+            txframe_status_ack(&frame->status),
+            frame_type_has_discontinuity(frame->status.frame_type));
     } else {
         tarq.FrameMissed();
     }

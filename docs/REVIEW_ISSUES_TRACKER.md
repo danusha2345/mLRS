@@ -38,8 +38,8 @@
 | ID | P | Статус | Область | Краткое описание | Связь |
 |---|---:|---|---|---|---|
 | MLRS-001 | P0 | FIXED | MAVLinkX | Bounded decoder отклоняет overflow и malformed tokens | новый |
-| MLRS-002 | P0 | CONFIRMED | ARQ | Старый 1-bit ACK подтверждает другой 3-bit `seq_no` | PR #185 |
-| MLRS-003 | P0 | CONFIRMED | ARQ | Полный wrap скрывает потерю семи payload и parser reset | PR #185 |
+| MLRS-002 | P0 | IMPLEMENTED | ARQ | Полный 3-bit ACK и resync marker исключают stale-ACK alias | PR #185 |
+| MLRS-003 | P0 | IMPLEMENTED | ARQ | Marked resync принимается после modulo wrap и сбрасывает parser | PR #185 |
 | MLRS-004 | P0 | CONFIRMED | RF RX | `CHECK_ERROR_SYNCWORD` навсегда останавливает receiver | issue #342 |
 | MLRS-005 | P0 | CONFIRMED | ESP RF ISR | SPI-команды из ISR способны вызвать interrupt watchdog | issue #342 |
 | MLRS-006 | P0 | IMPLEMENTED | UDP bridge | Datagram полностью вычитывается чанками во всех UDP handlers | новый |
@@ -48,8 +48,8 @@
 | MLRS-009 | P1 | PARTIAL | TCP bridge | Blocking/partial `client.write()` переполняет UART RX | issue #478 |
 | MLRS-010 | P1 | PARTIAL | WLE5 timing | MAVLink/MSP loops не имеют byte/time budget | issue #283 |
 | MLRS-011 | P1 | CONFIRMED | FIFO/UART | Frame silently обрезается при заполнении очереди | новый |
-| MLRS-012 | P1 | CONFIRMED | ARQ | `SetRetryCntAuto()` всегда оставляет один retry | новый |
-| MLRS-013 | P1 | CONFIRMED | ARQ | Retry budget меняется во время жизни одного payload | новый |
+| MLRS-012 | P1 | FIXED | ARQ | Adaptive retry thresholds больше не затираются значением 1 | новый |
+| MLRS-013 | P1 | IMPLEMENTED | ARQ | Retry budget вычисляется только для fresh payload | новый |
 | MLRS-014 | P1 | CONFIRMED | Bridge UART | Ошибка выделения RX/TX buffer игнорируется | issue #478 class |
 | MLRS-015 | P2 | IN_PROGRESS | Setup | Non-interactive path исправлен; dependency policy ещё не выбрана | PR #228 |
 | MLRS-016 | P2 | FIXED | Generator | Exception печатается в stderr и завершает generator с code 1 | новый |
@@ -113,9 +113,9 @@ Definition of done:
 ### MLRS-002 — stale ACK alias в ARQ
 
 **Приоритет:** P0  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
-Доказательства:
+Доказательства исходного снимка:
 
 - frame несёт `seq_no : 3`, но `ack : 1`:
   [`frame_types.h:62`](../mLRS/Common/frame_types.h#L62);
@@ -135,12 +135,12 @@ Definition of done:
 дальше. Локальная замена одного сравнения проблему не решает: потерянные два
 старших ACK bits уже невозможно восстановить.
 
-Исправление требует protocol decision:
+Исправление требовало protocol decision:
 
 - full 3-bit ACK с использованием существующих `spare` bits; и
 - явный discontinuity/drop marker для forced advance;
 - либо строгий stop-and-wait без forced advance с осознанным риском остановки
-  telemetry при асимметричном линке.
+  telemetry при асимметричном линке. Выбран первый вариант.
 
 Definition of done:
 
@@ -148,13 +148,29 @@ Definition of done:
 - property test перебирает потери uplink/downlink;
 - sender никогда не подтверждает payload, которого receiver не принимал.
 
+Реализовано:
+
+- полный ACK 0…7 кодируется текущим low bit и двумя бывшими `spare` bits;
+  размер status остаётся 5 bytes, RF frame — 91 bytes, payload — 64/82 bytes;
+- high bit `frame_type` используется как forced-discontinuity marker в Rx frame
+  и как его echo в следующем Tx ACK;
+- второй ранее свободный `frame_type` bit является обязательным ARQ-v2 flag,
+  поэтому mixed old/new pair отклоняется сразу вместо скрытой деградации;
+- после forced advance marked resync payload не заменяется следующим payload,
+  пока receiver не вернёт совпадающие 3-bit ACK и marker echo;
+- [`tests/host/test_arq.cpp`](../tests/host/test_arq.cpp) проверяет stale ACK и
+  65 536 комбинаций прямых/обратных потерь без false acknowledgement.
+
+Wire format требует одновременно обновлённых TX и RX firmware. До `FIXED`
+остаётся hardware loss/attenuation test matched-пары.
+
 ### MLRS-003 — blind wrap ARQ
 
 **Приоритет:** P0  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
-Receiver определяет свежесть простым `received_seq_no != last` и сам код
-признаёт ограничение modulo-8:
+В исходном снимке receiver определял свежесть простым
+`received_seq_no != last`, а код признавал ограничение modulo-8:
 [`arq.h:306`](../mLRS/Common/arq.h#L306).
 
 Последовательность `last=5`, lost `6,7,0,1,2,3,4`, затем новый `5` даёт:
@@ -173,6 +189,16 @@ Definition of done:
 - end-to-end test полного modulo wrap;
 - любой необратимый byte gap приводит к явному parser discontinuity;
 - новый payload с совпавшим modulo number не теряется как duplicate.
+
+Реализовано:
+
+- receiver сравнивает полный `(seq_no, discontinuity)` token;
+- marked payload принимается даже при совпавшем modulo-8 `seq_no`, выставляет
+  `FrameLost()` до передачи payload parser-ам и возвращает marker echo;
+- повтор того же marked payload считается duplicate и второй раз не выдаётся;
+- host regression проверяет normal `seq=5` → duplicate `5` → marked wrap `5`.
+
+До `FIXED` остаётся end-to-end hardware wrap/loss test на matched firmware.
 
 ### MLRS-004 — permanent halt на sync-word mismatch
 
@@ -371,12 +397,14 @@ Definition of done: для всех fill levels frame либо помещает�
 ### MLRS-012 — adaptive retry всегда равен одному
 
 **Приоритет:** P1  
-**Статус:** CONFIRMED
+**Статус:** FIXED
 
-После выбора 1–3 retries безусловно выполняется `SetRetryCnt(1)`:
+В исходном снимке после выбора 1–3 retries безусловно выполнялся
+`SetRetryCnt(1)`:
 [`arq.h:192`](../mLRS/Common/arq.h#L192).
 
-Самостоятельно выпускать эту правку нельзя: она чаще активирует MLRS-002/003.
+Самостоятельно выпускать эту правку было нельзя: она чаще активировала
+MLRS-002/003. Теперь она включена вместе с новым ACK/resync protocol.
 
 Definition of done после protocol fix:
 
@@ -384,12 +412,17 @@ Definition of done после protocol fix:
 - остальные modes: 799→1, 800→2;
 - unknown mode→1.
 
+Реализовано: `SetRetryCntAuto()` возвращается после выбранной mode branch и
+больше не затирает результат финальным `SetRetryCnt(1)`. Host test проверяет
+все перечисленные threshold boundaries.
+
 ### MLRS-013 — retry budget меняется внутри payload
 
 **Приоритет:** P1  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
-`SetRetryCntAuto()` вызывается и для fresh frame, и после retransmission:
+В исходном снимке `SetRetryCntAuto()` вызывался и для fresh frame, и после
+retransmission:
 [`mlrs-rx.cpp:345`](../mLRS/CommonRx/mlrs-rx.cpp#L345). Поэтому около порогов
 700/800 один payload может начать с лимитом 2–3, а закончить с лимитом 1.
 
@@ -397,6 +430,10 @@ Definition of done после protocol fix:
 
 Definition of done: изменение link metric во время retries не меняет budget
 текущего payload, но применяется к следующему.
+
+Реализовано: `SetRetryCntAuto()` вызывается только в fresh-payload branch;
+retransmission сохраняет budget, выбранный при создании payload. До `FIXED`
+остаётся hardware/timing проверка около thresholds 700/800.
 
 ### MLRS-014 — UART buffer allocation failure игнорируется
 
@@ -569,10 +606,10 @@ Definition of done: эти suites являются required PR checks, а hardwa
 - единый [`tests/host/run_host_tests.sh`](../tests/host/run_host_tests.sh)
   fail-fast запускает Python discovery и sanitizer suites;
 - host regression покрывает malformed/overflow MAVLinkX, UDP datagram drain,
-  generator exit semantics, non-interactive setup и STM32 build failure
-  propagation.
+  ARQ state/property invariants, generator exit semantics, non-interactive
+  setup и STM32 build failure propagation.
 
-Открыто: ARQ/frame/FIFO suites, required PR checks, полный bridge/STM32 build
+Открыто: frame/FIFO suites, required PR checks, полный bridge/STM32 build
 coverage и hardware/timing tests из минимальной программы выше.
 
 ## Исправленные или недоказанные первоначальные выводы
@@ -590,14 +627,12 @@ coverage и hardware/timing tests из минимальной программы
 
 ## Рекомендуемый порядок работ
 
-1. MLRS-001: bounded MAVLinkX decoder и sanitizer tests.
-2. MLRS-005, MLRS-004, MLRS-007, MLRS-008: ISR/recovery redesign.
-3. MLRS-006: UDP draining.
-4. MLRS-002, MLRS-003, затем MLRS-012/013: ARQ protocol redesign.
-5. MLRS-011 и MLRS-014: atomic buffering и observable overflow.
-6. MLRS-010: WLE5 execution budgets и timing proof.
-7. MLRS-009: TCP queues/backpressure и hardware A/B #478.
-8. MLRS-015–018, MLRS-020: воспроизводимый setup, fail-fast builds и CI.
-9. MLRS-019: закрыть либо документировать antenna2-only limitation.
+1. MLRS-005, MLRS-004, MLRS-007, MLRS-008: ISR/recovery redesign.
+2. Hardware validation MLRS-002/003 ARQ и MLRS-006 UDP draining.
+3. MLRS-011 и MLRS-014: atomic buffering и observable overflow.
+4. MLRS-010: WLE5 execution budgets и timing proof.
+5. MLRS-009: TCP queues/backpressure и hardware A/B #478.
+6. MLRS-015–018, MLRS-020: воспроизводимый setup, fail-fast builds и CI.
+7. MLRS-019: закрыть либо документировать antenna2-only limitation.
 
 До закрытия P0 итоговый статус dev `v1.4.03`: **NO-GO для production fork**.

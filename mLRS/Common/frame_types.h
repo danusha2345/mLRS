@@ -29,6 +29,31 @@ typedef enum {
     FRAME_TYPE_TX_RX_CMD = 0x02, // these commands use the normal Tx/Rx frames, with repurposed payload however
 } FRAME_TYPE_ENUM;
 
+#define FRAME_TYPE_VALUE_MASK          0x03 // current FRAME_TYPE_ENUM uses 0..2
+#define FRAME_TYPE_ARQ_V2_FLAG         0x04 // rejects unsafe mixed old/new pairs
+#define FRAME_TYPE_DISCONTINUITY_FLAG  0x08 // Rx payload marker or Tx ACK echo
+
+static inline uint8_t frame_type_value(uint8_t frame_type)
+{
+    return frame_type & FRAME_TYPE_VALUE_MASK;
+}
+
+static inline uint8_t frame_type_has_discontinuity(uint8_t frame_type)
+{
+    return (frame_type & FRAME_TYPE_DISCONTINUITY_FLAG) != 0;
+}
+
+static inline uint8_t frame_type_is_arq_v2(uint8_t frame_type)
+{
+    return (frame_type & FRAME_TYPE_ARQ_V2_FLAG) != 0;
+}
+
+static inline uint8_t frame_type_with_discontinuity(uint8_t frame_type, uint8_t discontinuity)
+{
+    return frame_type_value(frame_type) | FRAME_TYPE_ARQ_V2_FLAG |
+           (discontinuity ? FRAME_TYPE_DISCONTINUITY_FLAG : 0);
+}
+
 
 //-------------------------------------------------------
 // normal Tx,Rx frames
@@ -38,6 +63,7 @@ typedef struct
 {
     uint8_t seq_no;
     uint8_t ack;
+    uint8_t arq_discontinuity;
     int8_t rssi;
     uint8_t LQ_rc; // that's the LQ we want to report to the world
     uint8_t LQ_serial;
@@ -68,7 +94,7 @@ typedef struct
     uint32_t fhss_index : 6; // older versions have set that field to 63
     uint32_t LQ_serial : 7;
     uint32_t transmit_antenna : 1;
-    uint32_t spare : 2;
+    uint32_t ack_hi : 2; // high bits of the full 3-bit ACK
     uint32_t payload_len : 7;
 }) tTxFrameStatus; // 5 bytes
 
@@ -84,9 +110,35 @@ typedef struct
     uint32_t LQ_rc : 7; // available only for Rx->Tx frame, not for Tx->Rx
     uint32_t LQ_serial : 7;
     uint32_t transmit_antenna : 1;
-    uint32_t spare : 2;
+    uint32_t ack_hi : 2; // high bits of the full 3-bit ACK
     uint32_t payload_len : 7;
 }) tRxFrameStatus; // 5 bytes
+
+
+static inline void txframe_status_set_ack(tTxFrameStatus* const status, uint8_t ack)
+{
+    status->ack = ack & 0x01;
+    status->ack_hi = (ack >> 1) & 0x03;
+}
+
+
+static inline uint8_t txframe_status_ack(const tTxFrameStatus* const status)
+{
+    return status->ack | (status->ack_hi << 1);
+}
+
+
+static inline void rxframe_status_set_ack(tRxFrameStatus* const status, uint8_t ack)
+{
+    status->ack = ack & 0x01;
+    status->ack_hi = (ack >> 1) & 0x03;
+}
+
+
+static inline uint8_t rxframe_status_ack(const tRxFrameStatus* const status)
+{
+    return status->ack | (status->ack_hi << 1);
+}
 
 
 //-- Tx Frame ----------

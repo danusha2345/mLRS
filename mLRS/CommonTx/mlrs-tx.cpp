@@ -490,6 +490,7 @@ uint8_t payload_len = 0;
     tFrameStats frame_stats;
     frame_stats.seq_no = stats.transmit_seq_no;
     frame_stats.ack = rarq.AckSeqNo();
+    frame_stats.arq_discontinuity = rarq.AckDiscontinuity();
     frame_stats.antenna = stats.last_antenna;
     frame_stats.transmit_antenna = antenna;
     frame_stats.rssi = stats.GetLastRssi();
@@ -531,7 +532,7 @@ void process_received_frame(bool do_payload, tRxFrame* const frame)
     if (!accept_payload) return; // frame has no fresh payload
 
     // handle cmd frame
-    if (frame->status.frame_type == FRAME_TYPE_TX_RX_CMD) {
+    if (frame_type_value(frame->status.frame_type) == FRAME_TYPE_TX_RX_CMD) {
         process_received_rxcmdframe(frame);
         return;
     }
@@ -570,7 +571,9 @@ tRxFrame* frame;
 
     // handle receive ARQ, must come before process_received_frame()
     if (rx_status == RX_STATUS_VALID) {
-        rarq.Received(frame->status.seq_no);
+        rarq.Received(
+            frame->status.seq_no,
+            frame_type_has_discontinuity(frame->status.frame_type));
     } else {
         rarq.FrameMissed();
     }
@@ -1271,4 +1274,3 @@ IF_IN(
     }
 
 }//end of main_loop
-
