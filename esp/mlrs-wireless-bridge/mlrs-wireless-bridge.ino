@@ -13,7 +13,7 @@
 // NOTES:
 // - For ESP32 and ESP32C3: Partition Scheme needs to be changed to "No OTA (Large APP)" or "No OTA (2MB APP/2MB SPIFFS)" or similar!!
 // - Use upload speed 115200 if serial passthrough shall be used for flashing (else 921600 is fine)
-// - ArduinoIDE 2.3.2, esp32 by Espressif Systems 3.0.4
+// - ArduinoIDE 2.3.2, esp32 by Espressif Systems 3.3.11
 // This can be useful: https://github.com/espressif/arduino-esp32/blob/master/libraries
 // Dependencies:
 // You need to have in File->Preferences->Additional Board managers URLs
@@ -264,6 +264,8 @@ String ble_device_name = ""; // name of your BLE device as it will be seen by yo
     #include <esp_now.h>
   #endif
 #endif
+
+#include "serial-startup.h"
 
 
 //-------------------------------------------------------
@@ -568,6 +570,23 @@ unsigned long is_connected_tlast_ms;
 void serialFlushRx(void)
 {
     while (SERIAL.available() > 0) { SERIAL.read(); }
+}
+
+
+void serial_startup_halt(tSerialStartupError error)
+{
+    DBG_PRINT("FATAL: serial startup error ");
+    DBG_PRINTLN((int)error);
+
+    while (true) {
+        for (int i = 0; i < (int)error; i++) {
+            led_on(false);
+            delay(100);
+            led_off();
+            delay(100);
+        }
+        delay(1000);
+    }
 }
 
 
@@ -1183,7 +1202,30 @@ void setup()
     g_network_ssid = preferences.getString(G_NETWORK_SSID_STR, ""); // "" is the default network ssid
 #endif
 
-    // Wifi handler
+    // Serial
+    size_t rxbufsize = SERIAL.setRxBufferSize(SERIAL_RX_BUFFER_SIZE); // must come before uart started, returns 0 if already running
+    size_t txbufsize = 0;
+    bool tx_buffer_required = false;
+#ifndef ESP8266 // not implemented on ESP8266
+    txbufsize = SERIAL.setTxBufferSize(SERIAL_TX_BUFFER_SIZE); // must come before uart started, returns 0 if already running
+    tx_buffer_required = true;
+#endif
+#ifdef SERIAL_RXD // if SERIAL_TXD is not defined the compiler will complain, so all good
+  #ifdef USE_SERIAL_INVERTED
+    SERIAL.begin(g_baudrate, SERIAL_8N1, SERIAL_RXD, SERIAL_TXD, true);
+  #else
+    SERIAL.begin(g_baudrate, SERIAL_8N1, SERIAL_RXD, SERIAL_TXD);
+  #endif
+#else
+    SERIAL.begin(g_baudrate);
+#endif
+//????used to work    pinMode(U1_RXD, INPUT_PULLUP); // important, at least in older versions Arduino serial lib did not do it
+
+    tSerialStartupError serial_error = serial_startup_error(
+        rxbufsize, txbufsize, tx_buffer_required, static_cast<bool>(SERIAL));
+    if (serial_error != SERIAL_STARTUP_OK) serial_startup_halt(serial_error);
+
+    // Wifi handler: do not initialize a bridge without a working serial driver
     switch (g_protocol) {
 #ifdef USE_WIRELESS_PROTOCOL_TCP
         case WIRELESS_PROTOCOL_TCP: tcp_handler.Init(ip); wifi_handler = &tcp_handler; break;
@@ -1207,22 +1249,6 @@ void setup()
         case WIRELESS_PROTOCOL_ESPNOW: espnow_handler.Init(); wifi_handler = &espnow_handler; break;
 #endif
     }
-
-    // Serial
-    size_t rxbufsize = SERIAL.setRxBufferSize(2*1024); // must come before uart started, retuns 0 if it fails
-#ifndef ESP8266 // not implemented on ESP8266
-    size_t txbufsize = SERIAL.setTxBufferSize(512); // must come before uart started, retuns 0 if it fails
-#endif
-#ifdef SERIAL_RXD // if SERIAL_TXD is not defined the compiler will complain, so all good
-  #ifdef USE_SERIAL_INVERTED
-    SERIAL.begin(g_baudrate, SERIAL_8N1, SERIAL_RXD, SERIAL_TXD, true);
-  #else
-    SERIAL.begin(g_baudrate, SERIAL_8N1, SERIAL_RXD, SERIAL_TXD);
-  #endif
-#else
-    SERIAL.begin(g_baudrate);
-#endif
-//????used to work    pinMode(U1_RXD, INPUT_PULLUP); // important, at least in older versions Arduino serial lib did not do it
 
     DBG_PRINTLN(rxbufsize);
     DBG_PRINTLN(txbufsize);

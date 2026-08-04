@@ -50,7 +50,7 @@
 | MLRS-011 | P1 | IMPLEMENTED | FIFO/UART | FIFO и STM32 UART принимают frame целиком либо полностью отбрасывают | новый |
 | MLRS-012 | P1 | FIXED | ARQ | Adaptive retry thresholds больше не затираются значением 1 | новый |
 | MLRS-013 | P1 | IMPLEMENTED | ARQ | Retry budget вычисляется только для fresh payload | новый |
-| MLRS-014 | P1 | CONFIRMED | Bridge UART | Ошибка выделения RX/TX buffer игнорируется | issue #478 class |
+| MLRS-014 | P1 | IMPLEMENTED | Bridge UART | Неуспешный UART startup останавливает bridge с диагностическим кодом | issue #478 class |
 | MLRS-015 | P2 | IN_PROGRESS | Setup | Non-interactive path исправлен; dependency policy ещё не выбрана | PR #228 |
 | MLRS-016 | P2 | FIXED | Generator | Exception печатается в stderr и завершает generator с code 1 | новый |
 | MLRS-017 | P2 | IMPLEMENTED | STM32 build | Fail-fast для compile/link/size/objcopy и проверка artifacts | новый |
@@ -589,7 +589,27 @@ Bridge после `SERIAL.begin()` не проверяет `operator bool()`. О
 Definition of done: закреплён core без crash в failure path; fault injection
 для setter-after-begin и failed allocation; setup либо получает требуемые
 buffers, либо входит в явно наблюдаемый degraded mode, либо прекращает запуск
-bridge с понятной ошибкой. Решение policy по этому пункту пока отложено.
+bridge с понятной ошибкой.
+
+Реализован выбранный fail-closed policy:
+
+- production README закрепляет ESP32 Arduino core 3.3.11, а compile guard не
+  допускает затронутый ESP32 core 2.x;
+- requested RX 2048 и ESP32 TX 512 проверяются по результатам setters;
+- после `begin()` проверяется `HardwareSerial::operator bool()`;
+- protocol handler инициализируется только после успешного UART startup;
+- ошибка навсегда останавливает setup, выдаёт `FATAL: serial startup error N`
+  на отдельный debug UART, если он доступен, и повторяет LED-код: один импульс
+  для RX config, два для TX config, три для driver/allocation failure;
+- host fault-injection test моделирует setter-after-begin (`0`) и неуспешный
+  driver allocation для ESP32 и ESP8266;
+- compile/link проверены для ESP32-C3 и ESP32 Pico на Arduino core 3.3.8, а
+  также для production ESP8266 mapping на core 3.1.2; PlatformIO probe для
+  ESP8266 использовал explicit forward declaration, которое Arduino IDE
+  обычно генерирует автоматически.
+
+До статуса `FIXED` остаётся hardware-проверка boot и диагностической индикации
+на ESP32-C3/ESP32 и ESP8266, включая принудительный failure path.
 
 ### MLRS-015 — `run_setup.py` не автоматизируем
 
@@ -850,7 +870,7 @@ dual-toolchain CI, полный size report, hardware soak исходного #1
 
 1. Hardware validation MLRS-004/005/007/008 ISR/recovery redesign.
 2. Hardware validation MLRS-002/003 ARQ и MLRS-006 UDP draining.
-3. Hardware validation MLRS-011 и выбор fail-closed/degraded policy MLRS-014.
+3. Hardware validation MLRS-011 и fail-closed diagnostics MLRS-014.
 4. MLRS-010: WLE5 execution budgets и timing proof.
 5. MLRS-009: TCP queues/backpressure и hardware A/B #478.
 6. MLRS-015–018, MLRS-020/021: воспроизводимый setup, toolchain migration,
