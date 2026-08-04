@@ -4,8 +4,8 @@
 
 - Проверенный commit: `a155e211` (`v1.4.03`, dev).
 - ESP build matrix после генерации fastMAVLink: 32/32 конфигурации успешно.
-- STM32 matrix не собиралась из-за отсутствия toolchain; отдельно проверена
-  семантика build scripts.
+- Установлен Arm GNU Toolchain 11.3.Rel1; representative STM32 targets для
+  F1/F3/G4/WL собираются. Отдельный migration probe выполнен GCC 14.2.1.
 - Доказательства относятся к исходному снимку; статусы `IMPLEMENTED` и `FIXED`
   ниже отражают последующие изменения в рабочей ветке.
 
@@ -47,7 +47,7 @@
 | MLRS-008 | P1 | IMPLEMENTED | RF IRQ | Saturating pending counter передаёт IRQ из ISR атомарно | новый |
 | MLRS-009 | P1 | PARTIAL | TCP bridge | Blocking/partial `client.write()` переполняет UART RX | issue #478 |
 | MLRS-010 | P1 | PARTIAL | WLE5 timing | MAVLink/MSP loops не имеют byte/time budget | issue #283 |
-| MLRS-011 | P1 | IN_PROGRESS | FIFO/UART | `tFifo` принимает frame целиком либо полностью отбрасывает | новый |
+| MLRS-011 | P1 | IMPLEMENTED | FIFO/UART | FIFO и STM32 UART принимают frame целиком либо полностью отбрасывают | новый |
 | MLRS-012 | P1 | FIXED | ARQ | Adaptive retry thresholds больше не затираются значением 1 | новый |
 | MLRS-013 | P1 | IMPLEMENTED | ARQ | Retry budget вычисляется только для fresh payload | новый |
 | MLRS-014 | P1 | CONFIRMED | Bridge UART | Ошибка выделения RX/TX buffer игнорируется | issue #478 class |
@@ -57,6 +57,7 @@
 | MLRS-018 | P2 | CONFIRMED | CI | На `main` нет CI; PR #155 не является рабочим PR check | PR #155 |
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
 | MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner добавлен; CI/hardware coverage ещё открыты | новый |
+| MLRS-021 | P2 | CONFIRMED | Toolchain | GCC >11 запрещён устаревшим guard, хотя GCC 14 уже собирает STM32 matrix | issue #159 |
 
 ## Подробные карточки
 
@@ -282,7 +283,8 @@ Definition of done:
   RX/TX DIO handlers, а ESP8266 и ESP32 firmware builds проходят.
 
 Осталось до `FIXED`: instrumented hardware fault injection для DIO и stuck
-BUSY; STM32 compile/runtime validation требует установленного toolchain.
+BUSY; representative STM32 compile проходит с GCC 11.3, runtime validation
+остаётся аппаратной.
 
 ### MLRS-006 — UDP RX wedge после datagram >256 bytes
 
@@ -437,7 +439,7 @@ Definition of done:
 ### MLRS-011 — silent partial frame enqueue
 
 **Приоритет:** P1  
-**Статус:** IN_PROGRESS
+**Статус:** IMPLEMENTED
 
 `tFifo::PutBuf()` игнорирует неуспешный `Put()`:
 [`fifo.h:31`](../mLRS/Common/libs/fifo.h#L31). STM32 `uart_putbuf()` аналогично
@@ -463,10 +465,20 @@ Definition of done: для всех fill levels frame либо помещает�
 - ASan/UBSan host regression перебирает все fill levels малой очереди,
   oversized frames и wraparound, проверяя контракт all-or-nothing и порядок.
 
-Открыто: STM32 `uart_putbuf()` находится в отдельном submodule
-`mLRS/modules/stm32ll-lib`. Для полного `IMPLEMENTED` нужен отдельный commit в
-этом submodule и обновление pointer в parent repo; до этого прямой STM32 UART
-path всё ещё может частично поставить frame.
+Реализовано в submodule `mLRS/modules/stm32ll-lib`:
+
+- hardware UART `uart_putbuf()` и его generated варианты сначала вычисляют
+  свободную ёмкость ISR ring buffer, затем либо ставят весь buffer одним
+  commit `txwritepos`, либо возвращают `0`, не меняя очередь;
+- тот же контракт применён к software UART `swuart_putbuf()`;
+- API возвращает принятый `len` либо `0`, а отдельный saturating overflow
+  counter доступен через `*_tx_overflow_count()` и сбрасывается при `Init()`;
+- generator regression проверяет идентичность шести generated headers, source
+  ordering и all-or-nothing ring model для всех fill levels малой очереди;
+- STM32 builds с hardware UART и SWUART проходят на G4 и WL.
+
+До `FIXED` остаётся аппаратный burst/overflow test, подтверждающий отсутствие
+partial frame на проводе и корректное увеличение counter.
 
 ### MLRS-012 — adaptive retry всегда равен одному
 
@@ -514,13 +526,70 @@ retransmission сохраняет budget, выбранный при создан
 **Приоритет:** P1  
 **Статус:** CONFIRMED
 
-`setRxBufferSize(2048)` и `setTxBufferSize(512)` возвращают 0 при failure, но
-результат только печатается:
-[`mlrs-wireless-bridge.ino:1216`](../esp/mlrs-wireless-bridge/mlrs-wireless-bridge.ino#L1216).
+Первоначальная формулировка была неточной. В проверенных Arduino cores вызов
+`setRxBufferSize(2048)` до `begin()` не выделяет память: он сохраняет requested
+size и возвращает его. ESP32 `setTxBufferSize(512)` ведёт себя так же. Реальное
+выделение происходит позже внутри `begin()` (`uart_driver_install()` на
+ESP32, цепочка `malloc()` в `uart_init()` на ESP8266). Поэтому вывод
+`2048/512` в
+[`mlrs-wireless-bridge.ino:1212`](../esp/mlrs-wireless-bridge/mlrs-wireless-bridge.ino#L1212)
+подтверждает только принятую конфигурацию, но не успешный старт UART.
 
-Definition of done: setup либо получает требуемые buffers, либо явно включает
-degraded mode с counters/меньшим baud rate, либо прекращает запуск bridge с
-понятной ошибкой.
+Bridge после `SERIAL.begin()` не проверяет `operator bool()`. Ошибка проявится
+в следующих случаях:
+
+1. Для RX нужен contiguous block около 2 KiB, а для ESP32 дополнительно TX
+   ring 512 bytes, event queue и driver structures. При малом либо
+   фрагментированном heap `begin()` может не установить driver. Риск выше в
+   custom builds, после дополнительных ранних allocations или при повторной
+   инициализации; в стандартном setup UART стартует рано, поэтому вероятность
+   мала, но failure path остаётся реальным.
+2. Если выбранный `SERIAL` уже запущен, setters возвращают `0` и новые размеры
+   не применяются. Текущие штатные board/debug mappings обычно используют
+   разные UARTs, но custom mapping или ранний `Serial.begin()` активирует этот
+   сценарий.
+3. Ошибка pins/config/driver install даёт тот же внешний результат, хотя это
+   уже не allocation failure: bridge всё равно продолжает setup без рабочего
+   UART.
+
+Последствия зависят от core:
+
+- ESP8266 core 3.1.2 оставляет `_uart == nullptr`; `available/read/write`
+  превращаются в безопасные `0`, и Wi-Fi bridge внешне запускается, но serial
+  traffic бесследно не проходит;
+- проверенный ESP32 Arduino core 2.0.17 содержит дополнительный defect в error
+  path: после `uartEnd()` указатель обнуляется, а затем разыменовывается в
+  diagnostic log. Allocation/driver failure поэтому может дать crash/reboot
+  ещё внутри `begin()`, до проверки из sketch;
+- в текущем upstream Arduino-ESP32 порядок исправлен: `begin()` возвращает с
+  `_uart == nullptr`, а `HardwareSerial::operator bool()` сообщает, установлен
+  ли driver. Сам setter по-прежнему не является allocation probe.
+
+Варианты исправления:
+
+1. **Fail closed (рекомендуется).** Сначала pin/upgrade Arduino-ESP32 core, где
+   error path не разыменовывает `nullptr`; после setters проверить requested
+   sizes, после `begin()` — `if (!SERIAL)`, вывести distinct diagnostic/LED
+   code и не запускать protocol handler. Это не создаёт bridge, который
+   выглядит живым, но молча теряет весь serial stream.
+2. **Явный degraded mode.** До `begin()` проверить largest free block как
+   advisory signal, при нехватке выбрать заранее определённую ступень
+   RX `2048 -> 1024 -> 512` и ESP32 TX `512 -> 0`, затем обязательно проверить
+   `operator bool()`. Активный размер/degraded state и UART overrun/drop
+   counters должны быть доступны в диагностике. Простое снижение baud rate не
+   уменьшает allocation и само по себе не является fallback; без согласования
+   producer rate оно, наоборот, дольше держит bytes в очереди.
+3. **Снизить вероятность.** Перенести UART init до Preferences/String и
+   protocol-specific initialization. Это улучшает шанс получить contiguous
+   block, но не заменяет observable success check.
+4. **Убрать dynamic driver allocation.** Собственный ESP-IDF/static UART path
+   делает память предсказуемой, но заметно увеличивает maintenance scope и
+   оправдан только если fail-closed/degraded policy недостаточна.
+
+Definition of done: закреплён core без crash в failure path; fault injection
+для setter-after-begin и failed allocation; setup либо получает требуемые
+buffers, либо входит в явно наблюдаемый degraded mode, либо прекращает запуск
+bridge с понятной ошибкой. Решение policy по этому пункту пока отложено.
 
 ### MLRS-015 — `run_setup.py` не автоматизируем
 
@@ -610,8 +679,9 @@ negative test с намеренно сломанным source/flag.
   без STM32 toolchain проверяет non-zero child exit, missing/empty artifact и
   остановку до link при exception из parallel compile.
 
-До `FIXED` остаются representative STM32 build с реальным toolchain и CI
-negative test с намеренно сломанным source/flag.
+Representative F1/F3/G4/WL builds проходят с реальным GCC 11.3 и migration
+probe GCC 14.2. До `FIXED` остаётся CI negative test с намеренно сломанным
+source/flag.
 
 ### MLRS-018 — отсутствует работающий PR CI
 
@@ -689,6 +759,78 @@ Definition of done: эти suites являются required PR checks, а hardwa
 Открыто: frame suites, required PR checks, полный bridge/STM32 build
 coverage и hardware/timing tests из минимальной программы выше.
 
+### MLRS-021 — STM32 toolchain искусственно зафиксирован на GCC 11
+
+**Приоритет:** P2
+**Статус:** CONFIRMED
+**GitHub:** [issue #159](https://github.com/olliw42/mLRS/issues/159)
+
+[`glue.h`](../mLRS/Common/hal/glue.h) безусловно запрещает `__GNUC__ > 11`, а
+`findSTM32CubeIDEGnuTools()` пропускает все CubeIDE plugins с GCC >=12. При
+этом standalone compiler из `PATH` не проверяется заранее: новый GCC доходит
+до compile и падает только на `#error`.
+
+Guard появился в апреле 2024 после реального runtime defect из #159: GCC 12
+firmware мог уронить TX при MAVLinkX, активном serial stream и особенно
+230400 baud. Это не была compile error. В марте 2025 тот же reporter получил
+двухчасовой стабильный прогон current code и с GCC 13, и повторно с GCC 12;
+в марте 2026 issue закрыт как исчезнувший после redesign. Guard после этого
+не пересматривался.
+
+Диагностический probe на текущей ветке временно снял только `#error` и собрал
+реальным Debian `arm-none-eabi-gcc 14.2.1` targets F1, F3, G4 и WL, включая RX,
+TX, USB, ELRS bootloader и SiK telemetry варианты. Compile/link blockers GCC
+12+ не воспроизвелись. Сравнение одинаковых `-Os`, `gnu11`/`gnu++14` builds:
+
+| Target | GCC 11.3 `.text` | GCC 14.2 `.text` | Изменение |
+|---|---:|---:|---:|
+| `rx-matek-mr24-30-g431kb` | 55 084 | 56 152 | +1.94% |
+| `rx-R9M-f103c8` | 53 692 | 54 464 | +1.44% |
+| `rx-R9MLitePro-v15-f303cc` | 52 052 | 52 988 | +1.80% |
+| `rx-matek-mr900-22-wle5cc` | 56 624 | 57 568 | +1.67% |
+| `tx-matek-mr24-30-g431kb-default` | 100 324 | 104 456 | +4.12% |
+
+То есть новый compiler уже source-compatible с проверенной matrix, но даёт
+заметный рост flash, особенно TX. Успешная сборка не закрывает исходный
+runtime/timing defect.
+
+Что изменилось в актуальной линии Arm GNU:
+
+- Arm публикует ветки 12.3, 13.3, 14.3, 15.2 и 15.3; новые releases начиная с
+  15.3.Rel1 перенесены на официальный Arm GitLab. GCC, Binutils, GDB и newlib
+  существенно новее, чем в 11.3.Rel1;
+- GCC 12/13/15 уменьшили число случайных transitive C++ includes, поэтому
+  legacy code чаще требует явных headers; GCC 14 строже отклоняет старые C
+  implicit declarations и несовместимые pointer conversions;
+- GCC 15 по умолчанию переключил C на `gnu23`, но STM32 build script уже явно
+  задаёт `-std=gnu11` и `-std=gnu++14`, поэтому этот default проект не меняет.
+  Риски перехода здесь — optimizer/code layout, размер, новая newlib/binutils
+  и hardware timing, а не смена language dialect.
+
+Рекомендуемый переход:
+
+1. Оставить 11.3.Rel1 как reproducible reference и добавить dual-toolchain CI.
+   Первой production-целью взять линию 14.x (сначала повторить probe точным
+   официальным 14.3.Rel1), а 15.3 оценивать отдельным следующим шагом.
+2. В build script добавить явный `--toolchain`/version report, разрешённый
+   version range и fail-fast: unknown option и target с нулём совпадений
+   должны завершаться non-zero. Сейчас даже `--help` запускает default matrix,
+   а опечатка в target может дать ложный code 0.
+3. Для всех release targets сравнивать flash/RAM/stack-usage и запрещать
+   overflow linker regions; сохранить artifacts и size diff между 11.3 и
+   14.3.
+4. Повторить исходный hardware reproducer: STM32 TX, MAVLinkX, активный FC
+   stream, 230400 baud, все RF modes, минимум двухчасовой test и длительный
+   soak с exact firmware hash. Добавить USB/bootloader/programming smoke.
+5. Только после matrix и hardware gates удалить broad `#error` либо заменить
+   его документированным minimum/known-bad check. Не обходить guard через
+   переопределение `__GNUC__`: это меняет compiler-header branches и делает
+   результат недостоверным.
+
+Definition of done: exact pinned 14.x archive/checksum для Linux/Windows,
+dual-toolchain CI, полный size report, hardware soak исходного #159 сценария,
+обновлённый build script и удалённый broad GCC 11 guard.
+
 ## Исправленные или недоказанные первоначальные выводы
 
 - `SERIAL.write(buf,len)` на ESP32 core 3.3.10 не делает silent partial write:
@@ -701,15 +843,18 @@ coverage и hardware/timing tests из минимальной программы
   текущего `main`.
 - Успешные 32/32 ESP builds доказывают compileability только после ручной
   генерации fastMAVLink; они не доказывают runtime correctness.
+- Результаты `setRxBufferSize()`/`setTxBufferSize()` до `begin()` — requested
+  sizes, а не подтверждение успешного выделения UART buffers.
 
 ## Рекомендуемый порядок работ
 
 1. Hardware validation MLRS-004/005/007/008 ISR/recovery redesign.
 2. Hardware validation MLRS-002/003 ARQ и MLRS-006 UDP draining.
-3. MLRS-011 и MLRS-014: atomic buffering и observable overflow.
+3. Hardware validation MLRS-011 и выбор fail-closed/degraded policy MLRS-014.
 4. MLRS-010: WLE5 execution budgets и timing proof.
 5. MLRS-009: TCP queues/backpressure и hardware A/B #478.
-6. MLRS-015–018, MLRS-020: воспроизводимый setup, fail-fast builds и CI.
+6. MLRS-015–018, MLRS-020/021: воспроизводимый setup, toolchain migration,
+   fail-fast builds и CI.
 7. MLRS-019: закрыть либо документировать antenna2-only limitation.
 
 До закрытия P0 итоговый статус dev `v1.4.03`: **NO-GO для production fork**.

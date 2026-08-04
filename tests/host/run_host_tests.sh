@@ -6,6 +6,8 @@ repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 
 cd "${repo_root}"
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/host -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+    -s mLRS/modules/stm32ll-lib/tests -p 'test_*.py'
 "${script_dir}/run_arq_tests.sh"
 "${script_dir}/run_fifo_tests.sh"
 "${script_dir}/run_radio_irq_tests.sh"
