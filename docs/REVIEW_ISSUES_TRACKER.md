@@ -50,7 +50,7 @@
 | MLRS-013 | P1 | CONFIRMED | ARQ | Retry budget меняется во время жизни одного payload | новый |
 | MLRS-014 | P1 | CONFIRMED | Bridge UART | Ошибка выделения RX/TX buffer игнорируется | issue #478 class |
 | MLRS-015 | P2 | CONFIRMED | Setup | `run_setup.py` не работает non-interactively и не описывает deps | PR #228 |
-| MLRS-016 | P2 | CONFIRMED | Generator | fastMAVLink generator может завершиться кодом 0 после exception | новый |
+| MLRS-016 | P2 | FIXED | Generator | Exception печатается в stderr и завершает generator с code 1 | новый |
 | MLRS-017 | P2 | CONFIRMED | STM32 build | Compile/link/objcopy return codes игнорируются | новый |
 | MLRS-018 | P2 | CONFIRMED | CI | На `main` нет CI; PR #155 не является рабочим PR check | PR #155 |
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
@@ -434,7 +434,7 @@ Definition of done: чистый Linux/Windows runner выполняет setup �
 ### MLRS-016 — generator сообщает успех после exception
 
 **Приоритет:** P2  
-**Статус:** CONFIRMED
+**Статус:** FIXED
 
 `fmav_generate_c_library.py` сначала удаляет `out`, а при exception вызывает
 `exit()` без ненулевого кода:
@@ -442,6 +442,14 @@ Definition of done: чистый Linux/Windows runner выполняет setup �
 
 Definition of done: failure сохраняет понятную диагностику, завершается
 non-zero и не может быть принят wrapper/CI за успешную генерацию.
+
+Реализовано:
+
+- exception diagnostic направляется в `stderr`;
+- generator завершает failure через `sys.exit(1)`, поэтому `run_setup.py` и CI
+  видят non-zero child status;
+- [`tests/host/test_fmav_generator.py`](../tests/host/test_fmav_generator.py)
+  проверяет success path и exception path с точным exit code.
 
 ### MLRS-017 — STM32 build допускает false success
 

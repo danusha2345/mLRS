@@ -51,6 +51,5 @@ try:
 
 except Exception as ex:
     exStr = str(ex)
-    print('Error Generating Headers','{0!s}'.format(exStr))
-    exit()
-
+    print('Error Generating Headers','{0!s}'.format(exStr), file=sys.stderr)
+    sys.exit(1)
