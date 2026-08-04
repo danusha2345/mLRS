@@ -4,10 +4,14 @@
 
 - Проверенный commit: `a155e211` (`v1.4.03`, dev).
 - ESP build matrix после генерации fastMAVLink: 32/32 конфигурации успешно.
-- Установлен Arm GNU Toolchain 11.3.Rel1; representative STM32 targets для
-  F1/F3/G4/WL собираются. Отдельный migration probe выполнен GCC 14.2.1.
+- Установлены Arm GNU Toolchain 11.3.Rel1 и официальный 14.3.Rel1; полная
+  STM32 matrix 55/55 собирается обоими compiler lines.
 - Доказательства относятся к исходному снимку; статусы `IMPLEMENTED` и `FIXED`
   ниже отражают последующие изменения в рабочей ветке.
+- Аппаратная validation в текущем рабочем контуре недоступна. Активный scope —
+  только code review, host/model tests, reproducible builds, static analysis и
+  CI. Hardware acceptance сохраняется как внешнее ограничение и не выдаётся за
+  выполненную проверку.
 
 ## Обозначения
 
@@ -51,13 +55,13 @@
 | MLRS-012 | P1 | FIXED | ARQ | Adaptive retry thresholds больше не затираются значением 1 | новый |
 | MLRS-013 | P1 | IMPLEMENTED | ARQ | Retry budget вычисляется только для fresh payload | новый |
 | MLRS-014 | P1 | IMPLEMENTED | Bridge UART | Неуспешный UART startup останавливает bridge с диагностическим кодом | issue #478 class |
-| MLRS-015 | P2 | IN_PROGRESS | Setup | Non-interactive path исправлен; dependency policy ещё не выбрана | PR #228 |
+| MLRS-015 | P2 | IN_PROGRESS | Setup | Non-interactive path и pinned dependencies проверены на Linux; Windows ещё открыт | PR #228 |
 | MLRS-016 | P2 | FIXED | Generator | Exception печатается в stderr и завершает generator с code 1 | новый |
 | MLRS-017 | P2 | IMPLEMENTED | STM32 build | Fail-fast для compile/link/size/objcopy и проверка artifacts | новый |
-| MLRS-018 | P2 | CONFIRMED | CI | На `main` нет CI; PR #155 не является рабочим PR check | PR #155 |
+| MLRS-018 | P2 | IN_PROGRESS | CI | Добавлен dual-toolchain STM32 workflow; ESP/bridge и required-check policy ещё открыты | PR #155 |
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
-| MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner добавлен; CI/hardware coverage ещё открыты | новый |
-| MLRS-021 | P2 | IN_PROGRESS | Toolchain | Выбор toolchain и CLI fail-fast исправлены; GCC >11 guard ждёт hardware gates | issue #159 |
+| MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner включён в CI; ESP build и external hardware coverage ещё открыты | новый |
+| MLRS-021 | P2 | IMPLEMENTED | Toolchain | GCC 11.3/14.3 проходят 55/55; broad guard заменён code-validated верхней границей 14 | issue #159 |
 
 ## Подробные карточки
 
@@ -644,10 +648,12 @@ Definition of done: чистый Linux/Windows runner выполняет setup �
 - [`tests/host/test_run_setup.py`](../tests/host/test_run_setup.py) проверяет
   interpreter propagation, non-interactive success и failure paths.
 
-Открыто: выбрать dependency policy (root pinned requirements, автоматически
-создаваемый venv или только validation существующего environment), после чего
-проверить clean Linux/Windows setup. Текущий DroneCAN generator импортирует
-`empy`, `pexpect` и внешний package `dronecan`; pin-ы для них не выбраны.
+Dependency policy выбрана: корневой
+[`requirements-tools.txt`](../requirements-tools.txt) фиксирует версии и
+SHA-256 для `empy`, `pexpect`, `ptyprocess` и `dronecan`. Установка с
+`--require-hashes` и полный `--copy --mavlink --dronecan` setup проверены в
+чистом Linux venv. Открыты Windows setup и optional `lxml`: без него
+fastMAVLink generator работает, но предупреждает, что XML validation отключена.
 
 ### MLRS-016 — generator сообщает успех после exception
 
@@ -676,9 +682,9 @@ non-zero и не может быть принят wrapper/CI за успешну
 
 В исходном снимке return codes игнорировались для:
 
-- compile: [`run_make_firmwares.py:718`](../tools/run_make_firmwares.py#L718);
-- link: [`run_make_firmwares.py:790`](../tools/run_make_firmwares.py#L790);
-- size/objcopy: [`run_make_firmwares.py:850`](../tools/run_make_firmwares.py#L850).
+- compile: [`run_make_firmwares.py:756`](../tools/run_make_firmwares.py#L756);
+- link: [`run_make_firmwares.py:828`](../tools/run_make_firmwares.py#L828);
+- size/objcopy: [`run_make_firmwares.py:888`](../tools/run_make_firmwares.py#L888).
 
 Дополнительно результаты `ThreadPoolExecutor.map()` не потребляются. Скрипт
 может закончиться кодом 0 после неполной/неуспешной сборки.
@@ -699,17 +705,16 @@ negative test с намеренно сломанным source/flag.
   без STM32 toolchain проверяет non-zero child exit, missing/empty artifact и
   остановку до link при exception из parallel compile.
 
-Representative F1/F3/G4/WL builds проходят с реальным GCC 11.3 и migration
-probe GCC 14.2. До `FIXED` остаётся CI negative test с намеренно сломанным
-source/flag.
+Полная STM32 matrix 55/55 проходит с реальными GCC 11.3.Rel1 и 14.3.Rel1. До
+`FIXED` остаётся CI negative test с намеренно сломанным source/flag.
 
-### MLRS-018 — отсутствует работающий PR CI
+### MLRS-018 — PR CI покрывает не все build surfaces
 
 **Приоритет:** P2  
-**Статус:** CONFIRMED  
+**Статус:** IN_PROGRESS
 **GitHub:** [PR #155](https://github.com/olliw42/mLRS/pull/155)
 
-На `main` нет `.github/workflows`. PR #155:
+В исходном снимке на `main` не было `.github/workflows`. Старый PR #155:
 
 - запускается только на `push`, а не `pull_request`;
 - вызывает интерактивный и зависимый от незадекларированного `em`
@@ -724,6 +729,22 @@ Definition of done:
   variants;
 - pinned toolchain/dependencies;
 - artifacts не публикуются при любой partial failure.
+
+Реализован первый рабочий CI layer:
+
+- [`.github/workflows/stm32-toolchains.yml`](../.github/workflows/stm32-toolchains.yml)
+  запускается на `pull_request`, `main` push и вручную;
+- generator dependencies и архивы Arm GNU 11.3.Rel1/14.3.Rel1 закреплены
+  версиями и SHA-256, setup выполняется non-interactive;
+- PR gate собирает F1/F3/G4/WL smoke matrix с USB, ELRS bootloader и SiK
+  variants и запускает host regression suites; manual input включает полную
+  matrix из 55 targets;
+- size reports публикуются как job summary и отдельные artifacts;
+- workflow проходит локальную проверку `actionlint`, а его setup/build команды
+  воспроизведены на чистом Linux venv.
+
+Открыто: первый реальный GitHub Actions run, required-check policy, ESP matrix,
+bridge variants и Windows setup.
 
 ### MLRS-019 — single-SPI antenna2-only остаётся незавершённой
 
@@ -782,13 +803,13 @@ coverage и hardware/timing tests из минимальной программы
 ### MLRS-021 — STM32 toolchain искусственно зафиксирован на GCC 11
 
 **Приоритет:** P2
-**Статус:** IN_PROGRESS
+**Статус:** IMPLEMENTED
 **GitHub:** [issue #159](https://github.com/olliw42/mLRS/issues/159)
 
-[`glue.h`](../mLRS/Common/hal/glue.h) безусловно запрещает `__GNUC__ > 11`, а
-`findSTM32CubeIDEGnuTools()` пропускает все CubeIDE plugins с GCC >=12. При
-этом standalone compiler из `PATH` не проверяется заранее: новый GCC доходит
-до compile и падает только на `#error`.
+В исходном снимке [`glue.h`](../mLRS/Common/hal/glue.h) безусловно запрещал
+`__GNUC__ > 11`, а `findSTM32CubeIDEGnuTools()` пропускал все CubeIDE plugins
+с GCC >=12. Standalone compiler из `PATH` не проверялся заранее: новый GCC
+доходил до compile и падал только на `#error`.
 
 Guard появился в апреле 2024 после реального runtime defect из #159: GCC 12
 firmware мог уронить TX при MAVLinkX, активном serial stream и особенно
@@ -797,22 +818,23 @@ firmware мог уронить TX при MAVLinkX, активном serial strea
 в марте 2026 issue закрыт как исчезнувший после redesign. Guard после этого
 не пересматривался.
 
-Диагностический probe на текущей ветке временно снял только `#error` и собрал
-реальным Debian `arm-none-eabi-gcc 14.2.1` targets F1, F3, G4 и WL, включая RX,
-TX, USB, ELRS bootloader и SiK telemetry варианты. Compile/link blockers GCC
-12+ не воспроизвелись. Сравнение одинаковых `-Os`, `gnu11`/`gnu++14` builds:
+Первичный Debian GCC 14.2 probe показал рост `.text` до 4.12%, но точный
+официальный Arm GNU 14.3.Rel1 дал другой результат. После полного setup оба
+compiler lines собрали 55/55 STM32 configurations, включая F1/F3/G4/L4/WL,
+RX/TX, USB, ELRS bootloader, SiK telemetry, DroneCAN и diversity/dual-band
+variants. Сравнение одинаковых `-Os`, `gnu11`/`gnu++14` builds:
 
-| Target | GCC 11.3 `.text` | GCC 14.2 `.text` | Изменение |
+| Target | GCC 11.3 `.text` | GCC 14.3 `.text` | Изменение |
 |---|---:|---:|---:|
-| `rx-matek-mr24-30-g431kb` | 55 084 | 56 152 | +1.94% |
-| `rx-R9M-f103c8` | 53 692 | 54 464 | +1.44% |
-| `rx-R9MLitePro-v15-f303cc` | 52 052 | 52 988 | +1.80% |
-| `rx-matek-mr900-22-wle5cc` | 56 624 | 57 568 | +1.67% |
-| `tx-matek-mr24-30-g431kb-default` | 100 324 | 104 456 | +4.12% |
+| `rx-matek-mr24-30-g431kb` | 55 084 | 54 752 | -0.60% |
+| `rx-R9M-f103c8` | 53 692 | 53 276 | -0.77% |
+| `rx-R9MLitePro-v15-f303cc` | 52 052 | 51 588 | -0.89% |
+| `rx-matek-mr900-22-wle5cc` | 56 656 | 56 196 | -0.81% |
+| `tx-matek-mr24-30-g431kb-default` | 100 324 | 99 812 | -0.51% |
 
-То есть новый compiler уже source-compatible с проверенной matrix, но даёт
-заметный рост flash, особенно TX. Успешная сборка не закрывает исходный
-runtime/timing defect.
+То есть официальный 14.3 не только source-compatible с полной matrix, но и
+слегка уменьшает `.text` на representative targets. Это code/build evidence;
+оно не является доказательством поведения реального радио.
 
 Что изменилось в актуальной линии Arm GNU:
 
@@ -827,45 +849,37 @@ runtime/timing defect.
   Риски перехода здесь — optimizer/code layout, размер, новая newlib/binutils
   и hardware timing, а не смена language dialect.
 
-Рекомендуемый переход:
+Реализованный code-only переход:
 
-1. Оставить 11.3.Rel1 как reproducible reference и добавить dual-toolchain CI.
-   Первой production-целью взять линию 14.x (сначала повторить probe точным
-   официальным 14.3.Rel1), а 15.3 оценивать отдельным следующим шагом.
-2. В build script добавить явный `--toolchain`/version report, разрешённый
-   version range и fail-fast: unknown option и target с нулём совпадений
-   должны завершаться non-zero. Сейчас даже `--help` запускает default matrix,
-   а опечатка в target может дать ложный code 0.
-3. Для всех release targets сравнивать flash/RAM/stack-usage и запрещать
-   overflow linker regions; сохранить artifacts и size diff между 11.3 и
-   14.3.
-4. Повторить исходный hardware reproducer: STM32 TX, MAVLinkX, активный FC
-   stream, 230400 baud, все RF modes, минимум двухчасовой test и длительный
-   soak с exact firmware hash. Добавить USB/bootloader/programming smoke.
-5. Только после matrix и hardware gates удалить broad `#error` либо заменить
-   его документированным minimum/known-bad check. Не обходить guard через
-   переопределение `__GNUC__`: это меняет compiler-header branches и делает
-   результат недостоверным.
-
-Реализован этап 1 перехода:
-
-- build script использует строгий parser: `--help` безопасно выводит справку,
+1. Arm GNU 11.3.Rel1 оставлен reproducible reference; официальный Linux архив
+   14.3.Rel1 закреплён SHA-256
+   `8f6903f8ceb084d9227b9ef991490413014d991874a1e34074443c2a72b14dbd`.
+   Windows ZIP закреплён SHA-256
+   `864c0c8815857d68a1bbba2e5e2782255bb922845c71c97636004a3d74f60986`.
+2. Build script использует строгий parser: `--help` безопасно выводит справку,
   неизвестные параметры и параметры без значения завершаются с code 2;
-- добавлены `--toolchain-dir DIR` и совместимый alias `--toolchain DIR`;
+3. Добавлены `--toolchain-dir DIR` и совместимый alias `--toolchain DIR`;
   каталог проверяется на наличие `gcc`, `g++`, `size` и `objcopy`, а перед
   сборкой печатается фактическая строка версии `arm-none-eabi-gcc`;
-- target с нулём совпадений завершается с code 2 до выбора toolchain и очистки
+4. Target с нулём совпадений завершается с code 2 до выбора toolchain и очистки
   `tools/build`, поэтому опечатка больше не выглядит успешной сборкой;
-- старые aliases `-t`/`-T`, `-d`/`-D`, `-np`, `-v`/`-V`, автоматический поиск
+5. Старые aliases `-t`/`-T`, `-d`/`-D`, `-np`, `-v`/`-V`, автоматический поиск
   CubeIDE и fallback через `PATH` сохранены и покрыты host regression tests.
+6. CubeIDE discovery принимает GCC 12–14, script отклоняет major >14 до
+   очистки build, а broad `#error` в `glue.h` заменён верхней code-validated
+   границей GCC 14. GCC 15 остаётся отдельным следующим migration step.
+7. Dual-toolchain workflow выполняет pinned setup и smoke matrix на PR, умеет
+   вручную запускать полные 55/55 builds и сохраняет size reports.
+8. В двух NiceRF LR2021 linker scripts секции `.ARM*` и init arrays помечены
+   `READONLY`; это устраняет обнаруженные GCC 14 `RWX LOAD segment` warnings.
 
-Guard GCC >11 намеренно не снят: разрешённая production-линия, dual-toolchain
-CI, полный size report и hardware soak исходного сценария #159 остаются
-следующими gates.
+Code-only Definition of done выполнен: pinned Linux/Windows 14.3 artifacts,
+dual-toolchain build gate, полный local 55/55 result, size comparison,
+обновлённый script и снятый broad GCC 11 guard.
 
-Definition of done: exact pinned 14.x archive/checksum для Linux/Windows,
-dual-toolchain CI, полный size report, hardware soak исходного #159 сценария,
-обновлённый build script и удалённый broad GCC 11 guard.
+Внешнее ограничение: hardware reproducer #159 выполнить негде. Поэтому runtime
+поведение GCC 14 на STM32 TX с MAVLinkX/230400 baud остаётся `UNVERIFIED`, и
+эта ветка не заявляет hardware/production acceptance.
 
 ## Исправленные или недоказанные первоначальные выводы
 
@@ -884,13 +898,17 @@ dual-toolchain CI, полный size report, hardware soak исходного #1
 
 ## Рекомендуемый порядок работ
 
-1. Hardware validation MLRS-004/005/007/008 ISR/recovery redesign.
-2. Hardware validation MLRS-002/003 ARQ и MLRS-006 UDP draining.
-3. Hardware validation MLRS-011 и fail-closed diagnostics MLRS-014.
-4. MLRS-010: WLE5 execution budgets и timing proof.
-5. MLRS-009: TCP queues/backpressure и hardware A/B #478.
-6. MLRS-015–018, MLRS-020/021: воспроизводимый setup, toolchain migration,
-   fail-fast builds и CI.
-7. MLRS-019: закрыть либо документировать antenna2-only limitation.
+Текущий рабочий scope — только код и автоматические проверки:
+
+1. MLRS-010: bounded WLE5 execution budgets и host timing model.
+2. MLRS-009: bounded TCP queues/backpressure и model/host regressions без
+   заявления hardware A/B #478.
+3. MLRS-015/018/020: завершить CI coverage для ESP/bridge и Windows setup.
+4. MLRS-019: запретить antenna2-only на всех code/API boundaries либо явно
+   документировать limitation.
+
+Hardware validation MLRS-002–008, MLRS-011/014 и runtime acceptance MLRS-021
+перенесены во внешний `UNVERIFIED` backlog: в текущем контуре выполнить их
+невозможно.
 
 До закрытия P0 итоговый статус dev `v1.4.03`: **NO-GO для production fork**.

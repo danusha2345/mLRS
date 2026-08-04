@@ -12,6 +12,11 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = REPO_ROOT / "tools/run_make_firmwares.py"
+GLUE_HEADER = REPO_ROOT / "mLRS/Common/hal/glue.h"
+NICERF_LINKER_SCRIPTS = (
+    REPO_ROOT / "mLRS/rx-diy-NiceRF-LR2021-g431kb/STM32G431KBUX_FLASH.ld",
+    REPO_ROOT / "mLRS/tx-diy-NiceRF-LR2021-g431kb/STM32G431KBUX_FLASH.ld",
+)
 
 
 def load_build_script():
@@ -114,9 +119,13 @@ class Stm32BuildFailureTest(unittest.TestCase):
                 )
 
     def test_toolchain_version_is_reported(self):
-        completed = types.SimpleNamespace(
+        numeric_version = types.SimpleNamespace(
             returncode=0,
-            stdout="arm-none-eabi-gcc (Arm GNU Toolchain) 11.3.1\nCopyright\n",
+            stdout="14.3.1\n",
+        )
+        version_banner = types.SimpleNamespace(
+            returncode=0,
+            stdout="arm-none-eabi-gcc (Arm GNU Toolchain) 14.3.1\nCopyright\n",
         )
         with mock.patch.object(
             self.build.shutil,
@@ -126,14 +135,76 @@ class Stm32BuildFailureTest(unittest.TestCase):
             with mock.patch.object(
                 self.build.subprocess,
                 "run",
-                return_value=completed,
+                side_effect=[numeric_version, version_banner],
             ):
                 version = self.build.report_toolchain_version("/toolchain")
 
         self.assertEqual(
             version,
-            "arm-none-eabi-gcc (Arm GNU Toolchain) 11.3.1",
+            "arm-none-eabi-gcc (Arm GNU Toolchain) 14.3.1",
         )
+
+    def test_toolchain_version_rejects_newer_unvalidated_major(self):
+        numeric_version = types.SimpleNamespace(
+            returncode=0,
+            stdout="15.2.1\n",
+        )
+        with mock.patch.object(
+            self.build.shutil,
+            "which",
+            return_value="/toolchain/arm-none-eabi-gcc",
+        ):
+            with mock.patch.object(
+                self.build.subprocess,
+                "run",
+                return_value=numeric_version,
+            ) as run:
+                with self.assertRaisesRegex(ValueError, "maximum GCC 14"):
+                    self.build.report_toolchain_version("/toolchain")
+
+        run.assert_called_once()
+
+    def test_cubeide_discovery_accepts_gcc14_and_skips_gcc15(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cubeide_dir = Path(temp_dir) / "stm32cubeide_1.18.1" / "plugins"
+            gcc14 = (
+                "com.st.stm32cube.ide.mcu.externaltools."
+                "gnu-tools-for-stm32.14.3.rel1.linux64_1.0.0.20250623"
+            )
+            gcc15 = (
+                "com.st.stm32cube.ide.mcu.externaltools."
+                "gnu-tools-for-stm32.15.2.rel1.linux64_1.0.0.20251217"
+            )
+            (cubeide_dir / gcc14).mkdir(parents=True)
+            (cubeide_dir / gcc15).mkdir()
+
+            st_dir, gnu_dir = self.build.findSTM32CubeIDEGnuTools(temp_dir)
+
+        self.assertEqual(st_dir, str(cubeide_dir))
+        self.assertEqual(gnu_dir, gcc14)
+
+    def test_build_script_and_source_gcc_upper_bounds_match(self):
+        glue_source = GLUE_HEADER.read_text(encoding="utf-8")
+        expected_guard = (
+            f"#if __GNUC__ > {self.build.MAX_CODE_VALIDATED_GCC_MAJOR}"
+        )
+
+        self.assertIn(expected_guard, glue_source)
+        self.assertNotIn("#if __GNUC__ > 11", glue_source)
+
+    def test_nicerf_linker_metadata_sections_are_read_only(self):
+        read_only_sections = (
+            ".ARM.extab (READONLY)",
+            ".ARM (READONLY)",
+            ".preinit_array (READONLY)",
+            ".init_array (READONLY)",
+            ".fini_array (READONLY)",
+        )
+        for linker_script in NICERF_LINKER_SCRIPTS:
+            source = linker_script.read_text(encoding="utf-8")
+            with self.subTest(linker_script=linker_script):
+                for section in read_only_sections:
+                    self.assertIn(section, source)
 
     def test_zero_matching_targets_fail_before_toolchain_and_cleanup(self):
         targets = [types.SimpleNamespace(target="rx-real-target")]

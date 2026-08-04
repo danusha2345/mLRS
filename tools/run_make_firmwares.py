@@ -29,6 +29,9 @@ from concurrent.futures import ThreadPoolExecutor
 #ST_DIR = os.path.join("C:/",'ST','STM32CubeIDE','STM32CubeIDE','plugins')
 #GNU_DIR = 'com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.10.3-2021.10.win32_1.0.0.202111181127'
 
+MAX_CODE_VALIDATED_GCC_MAJOR = 14
+
+
 def findSTM32CubeIDEGnuTools(search_root):
     st_dir = ''
     st_cubeide_dir = ''
@@ -66,9 +69,15 @@ def findSTM32CubeIDEGnuTools(search_root):
         for dirpath in os.listdir(st_dir):
             if 'mcu.externaltools.gnu-tools-for-stm32' in dirpath and gnu_dir_os_name in dirpath:
                 # the numbers after the string 'gnu-tools-for-stm32' contains the gnutools ver number, like .11.3
-                gnuver = int(dirpath.split('gnu-tools-for-stm32',1)[1][1:3])
-                if gnuver >= 12:
-                    print("WARNING: gnu-tools ver >= 12 found but skipped")
+                gnuver_match = re.search(r'gnu-tools-for-stm32\.(\d+)', dirpath)
+                if not gnuver_match:
+                    continue
+                gnuver = int(gnuver_match.group(1))
+                if gnuver > MAX_CODE_VALIDATED_GCC_MAJOR:
+                    print(
+                        'WARNING: gnu-tools ver '
+                        f'> {MAX_CODE_VALIDATED_GCC_MAJOR} found but skipped'
+                    )
                     continue
                 # the string after the last . contains a datum plus some other number
                 ver = int(dirpath[dirpath.rindex('.')+1:])
@@ -144,24 +153,53 @@ def resolve_toolchain_dir(explicit_dir=''):
 
 def report_toolchain_version(toolchain_dir):
     gcc_path = shutil.which('arm-none-eabi-gcc', path=toolchain_dir)
-    result = subprocess.run(
+    version_result = subprocess.run(
+        [gcc_path, '-dumpfullversion', '-dumpversion'],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if version_result.returncode != 0:
+        raise RuntimeError(
+            'failed to query arm-none-eabi-gcc numeric version '
+            f'(exit code {version_result.returncode})'
+        )
+    numeric_version = version_result.stdout.strip()
+    version_match = re.fullmatch(r'(\d+)(?:\.\d+)*', numeric_version)
+    if not version_match:
+        raise RuntimeError(
+            'arm-none-eabi-gcc returned an invalid numeric version: '
+            + repr(numeric_version)
+        )
+    gcc_major = int(version_match.group(1))
+    if gcc_major > MAX_CODE_VALIDATED_GCC_MAJOR:
+        raise ValueError(
+            f'GCC {numeric_version} is newer than the code-validated '
+            f'maximum GCC {MAX_CODE_VALIDATED_GCC_MAJOR}'
+        )
+
+    banner_result = subprocess.run(
         [gcc_path, '--version'],
         capture_output=True,
         text=True,
         check=False,
     )
-    if result.returncode != 0:
+    if banner_result.returncode != 0:
         raise RuntimeError(
             'failed to query arm-none-eabi-gcc version '
-            f'(exit code {result.returncode})'
+            f'(exit code {banner_result.returncode})'
         )
     version_line = next(
-        (line.strip() for line in result.stdout.splitlines() if line.strip()),
+        (line.strip() for line in banner_result.stdout.splitlines() if line.strip()),
         '',
     )
     if not version_line:
         raise RuntimeError('arm-none-eabi-gcc returned an empty version report')
     print('arm-none-eabi-gcc version:', version_line)
+    print(
+        'code-validated GCC upper bound:',
+        MAX_CODE_VALIDATED_GCC_MAJOR,
+    )
     print('------------------------------------------------------------')
     return version_line
 

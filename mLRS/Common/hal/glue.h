@@ -8,9 +8,11 @@
 //*******************************************************
 
 
-// for as long as issues with gcc12 are not sorted
-#if __GNUC__ > 11
-  #error Must be gnu gcc 11 or lower!
+// GCC 12 originally exposed the runtime issue tracked in #159. Current code
+// builds are validated through Arm GNU Toolchain 14.3.Rel1. Hardware acceptance
+// is a separate external gate and is not implied by this compile-time range.
+#if __GNUC__ > 14
+  #error GNU GCC versions newer than 14 have not passed the code build matrix!
 #endif
 
 

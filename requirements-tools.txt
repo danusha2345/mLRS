@@ -1,0 +1,9 @@
+# Reproducible dependencies for run_setup.py code generators and CI.
+dronecan==1.0.27 \
+    --hash=sha256:206f70e44b74b85653acf53851df0f373dd4fe7f63db96df8cbb1e564112afeb
+empy==3.3.4 \
+    --hash=sha256:73ac49785b601479df4ea18a7c79bc1304a8a7c34c02b9472cf1206ae88f01b3
+pexpect==4.9.0 \
+    --hash=sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523
+ptyprocess==0.7.0 \
+    --hash=sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35
