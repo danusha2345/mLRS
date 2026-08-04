@@ -56,7 +56,7 @@
 | MLRS-017 | P2 | IMPLEMENTED | STM32 build | Fail-fast для compile/link/size/objcopy и проверка artifacts | новый |
 | MLRS-018 | P2 | CONFIRMED | CI | На `main` нет CI; PR #155 не является рабочим PR check | PR #155 |
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
-| MLRS-020 | P2 | CONFIRMED | Tests | Нет host/unit/integration tests и bridge build coverage | новый |
+| MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner добавлен; CI/hardware coverage ещё открыты | новый |
 
 ## Подробные карточки
 
@@ -546,11 +546,12 @@ Definition of done: antenna2-only либо полноценно поддержи
 ### MLRS-020 — отсутствует автоматическое тестовое покрытие
 
 **Приоритет:** P2  
-**Статус:** CONFIRMED
+**Статус:** IN_PROGRESS
 
-В основном проекте найден только ручной [`Common/test.h`](../mLRS/Common/test.h).
-Нет host tests для ARQ/frame/FIFO/MAVLinkX, hardware recovery suite, bridge
-build matrix и timing regression tests.
+В исходном снимке основного проекта был найден только ручной
+[`Common/test.h`](../mLRS/Common/test.h). Не было host tests для
+ARQ/frame/FIFO/MAVLinkX, hardware recovery suite, bridge build matrix и timing
+regression tests.
 
 Минимальная программа:
 
@@ -562,6 +563,17 @@ build matrix и timing regression tests.
 
 Definition of done: эти suites являются required PR checks, а hardware tests
 сохраняют raw counters/logs и привязаны к exact firmware hash.
+
+Реализовано:
+
+- единый [`tests/host/run_host_tests.sh`](../tests/host/run_host_tests.sh)
+  fail-fast запускает Python discovery и sanitizer suites;
+- host regression покрывает malformed/overflow MAVLinkX, UDP datagram drain,
+  generator exit semantics, non-interactive setup и STM32 build failure
+  propagation.
+
+Открыто: ARQ/frame/FIFO suites, required PR checks, полный bridge/STM32 build
+coverage и hardware/timing tests из минимальной программы выше.
 
 ## Исправленные или недоказанные первоначальные выводы
 
