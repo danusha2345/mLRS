@@ -57,7 +57,7 @@
 | MLRS-018 | P2 | CONFIRMED | CI | На `main` нет CI; PR #155 не является рабочим PR check | PR #155 |
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
 | MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner добавлен; CI/hardware coverage ещё открыты | новый |
-| MLRS-021 | P2 | CONFIRMED | Toolchain | GCC >11 запрещён устаревшим guard, хотя GCC 14 уже собирает STM32 matrix | issue #159 |
+| MLRS-021 | P2 | IN_PROGRESS | Toolchain | Выбор toolchain и CLI fail-fast исправлены; GCC >11 guard ждёт hardware gates | issue #159 |
 
 ## Подробные карточки
 
@@ -524,7 +524,7 @@ retransmission сохраняет budget, выбранный при создан
 ### MLRS-014 — UART buffer allocation failure игнорируется
 
 **Приоритет:** P1  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
 Первоначальная формулировка была неточной. В проверенных Arduino cores вызов
 `setRxBufferSize(2048)` до `begin()` не выделяет память: он сохраняет requested
@@ -676,9 +676,9 @@ non-zero и не может быть принят wrapper/CI за успешну
 
 В исходном снимке return codes игнорировались для:
 
-- compile: [`run_make_firmwares.py:641`](../tools/run_make_firmwares.py#L641);
-- link: [`run_make_firmwares.py:711`](../tools/run_make_firmwares.py#L711);
-- size/objcopy: [`run_make_firmwares.py:769`](../tools/run_make_firmwares.py#L769).
+- compile: [`run_make_firmwares.py:718`](../tools/run_make_firmwares.py#L718);
+- link: [`run_make_firmwares.py:790`](../tools/run_make_firmwares.py#L790);
+- size/objcopy: [`run_make_firmwares.py:850`](../tools/run_make_firmwares.py#L850).
 
 Дополнительно результаты `ThreadPoolExecutor.map()` не потребляются. Скрипт
 может закончиться кодом 0 после неполной/неуспешной сборки.
@@ -782,7 +782,7 @@ coverage и hardware/timing tests из минимальной программы
 ### MLRS-021 — STM32 toolchain искусственно зафиксирован на GCC 11
 
 **Приоритет:** P2
-**Статус:** CONFIRMED
+**Статус:** IN_PROGRESS
 **GitHub:** [issue #159](https://github.com/olliw42/mLRS/issues/159)
 
 [`glue.h`](../mLRS/Common/hal/glue.h) безусловно запрещает `__GNUC__ > 11`, а
@@ -846,6 +846,22 @@ runtime/timing defect.
    его документированным minimum/known-bad check. Не обходить guard через
    переопределение `__GNUC__`: это меняет compiler-header branches и делает
    результат недостоверным.
+
+Реализован этап 1 перехода:
+
+- build script использует строгий parser: `--help` безопасно выводит справку,
+  неизвестные параметры и параметры без значения завершаются с code 2;
+- добавлены `--toolchain-dir DIR` и совместимый alias `--toolchain DIR`;
+  каталог проверяется на наличие `gcc`, `g++`, `size` и `objcopy`, а перед
+  сборкой печатается фактическая строка версии `arm-none-eabi-gcc`;
+- target с нулём совпадений завершается с code 2 до выбора toolchain и очистки
+  `tools/build`, поэтому опечатка больше не выглядит успешной сборкой;
+- старые aliases `-t`/`-T`, `-d`/`-D`, `-np`, `-v`/`-V`, автоматический поиск
+  CubeIDE и fallback через `PATH` сохранены и покрыты host regression tests.
+
+Guard GCC >11 намеренно не снят: разрешённая production-линия, dual-toolchain
+CI, полный size report и hardware soak исходного сценария #159 остаются
+следующими gates.
 
 Definition of done: exact pinned 14.x archive/checksum для Linux/Windows,
 dual-toolchain CI, полный size report, hardware soak исходного #159 сценария,
