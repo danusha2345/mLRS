@@ -204,6 +204,19 @@ def printError(txt):
     print('\033[91m'+txt+'\033[0m') # light Red
 
 
+def run_checked(cmd, stage):
+    return_code = subprocess.call(cmd, shell=True)
+    if return_code != 0:
+        raise RuntimeError(stage+' failed with exit code '+str(return_code)+': '+cmd)
+
+
+def require_nonempty_file(path, stage):
+    if not os.path.isfile(path):
+        raise RuntimeError(stage+' did not create artifact: '+path)
+    if os.path.getsize(path) <= 0:
+        raise RuntimeError(stage+' created empty artifact: '+path)
+
+
 #--------------------------------------------------
 # build system
 #--------------------------------------------------
@@ -621,10 +634,11 @@ def mlrs_compile_file(target, file):
         cmd += '-x assembler-with-cpp '
 
     cmd += '-MMD -MP '
+    object_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.o'
     cmd += '-MF"'+os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.d" '
-    cmd += '-MT"'+os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.o" '
+    cmd += '-MT"'+object_path+'" '
 
-    cmd += '-o "'+os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.o" '
+    cmd += '-o "'+object_path+'" '
 
     if is_asm:
         cmd += '"'+os.path.join(MLRS_DIR,file)+'" ' # asm needs it at end
@@ -638,7 +652,8 @@ def mlrs_compile_file(target, file):
 
     # execute
     #print('run')
-    subprocess.call(cmd, shell=True) # subprocess, not os.system, so parallel compiles aren't serialized
+    run_checked(cmd, 'compile '+file)
+    require_nonempty_file(object_path, 'compile '+file)
 
 
 def mlrs_link_target(target):
@@ -692,7 +707,8 @@ def mlrs_link_target(target):
     # generate command line
     cmd = ''
     cmd += os.path.join(GCC_DIR,'arm-none-eabi-g++') + ' '
-    cmd += '-o "'+os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf')+'" '
+    elf_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf')
+    cmd += '-o "'+elf_path+'" '
     cmd += '@"'+os.path.join(MLRS_BUILD_DIR,target.build_dir,'objects.list')+'" '
     cmd += '-T"'+os.path.join(MLRS_DIR,target.target,target.linker_script)+'" '
     for mcu_option in target.mcu_option_list:
@@ -708,7 +724,9 @@ def mlrs_link_target(target):
     #print(cmd)
 
     #print('run')
-    os.system(cmd)
+    run_checked(cmd, 'link '+target.target)
+    require_nonempty_file(elf_path, 'link '+target.target)
+    return elf_path
 
 
 def mlrs_build_target(target, cmdline_D_list):
@@ -761,25 +779,28 @@ def mlrs_build_target(target, cmdline_D_list):
     for file in files:
         create_dir(os.path.join(MLRS_BUILD_DIR,target.build_dir,os.path.dirname(file)))
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        pool.map(lambda file: mlrs_compile_file(target, file), files)
+        list(pool.map(lambda file: mlrs_compile_file(target, file), files))
 
     print('linking')
 
-    mlrs_link_target(target)
-    os.system(os.path.join(GCC_DIR,'arm-none-eabi-size')+' '+os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf'))
+    elf_path = mlrs_link_target(target)
+    run_checked(os.path.join(GCC_DIR,'arm-none-eabi-size')+' '+elf_path, 'size '+target.target)
 
     if 'MLRS_FEATURE_ELRS_BOOTLOADER' in target.extra_D_list:
-        os.system(
+        artifact_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elrs')
+        run_checked(
             os.path.join(GCC_DIR,'arm-none-eabi-objcopy') + ' -O binary ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf') + ' ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elrs')
+            elf_path + ' ' + artifact_path,
+            'objcopy '+target.target
         )
     else:
-        os.system(
+        artifact_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.hex')
+        run_checked(
             os.path.join(GCC_DIR,'arm-none-eabi-objcopy') + ' -O ihex ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf') + ' ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.hex')
+            elf_path + ' ' + artifact_path,
+            'objcopy '+target.target
         )
+    require_nonempty_file(artifact_path, 'objcopy '+target.target)
 
     print('------------------------------------------------------------')
 

@@ -51,7 +51,7 @@
 | MLRS-014 | P1 | CONFIRMED | Bridge UART | Ошибка выделения RX/TX buffer игнорируется | issue #478 class |
 | MLRS-015 | P2 | CONFIRMED | Setup | `run_setup.py` не работает non-interactively и не описывает deps | PR #228 |
 | MLRS-016 | P2 | FIXED | Generator | Exception печатается в stderr и завершает generator с code 1 | новый |
-| MLRS-017 | P2 | CONFIRMED | STM32 build | Compile/link/objcopy return codes игнорируются | новый |
+| MLRS-017 | P2 | IMPLEMENTED | STM32 build | Fail-fast для compile/link/size/objcopy и проверка artifacts | новый |
 | MLRS-018 | P2 | CONFIRMED | CI | На `main` нет CI; PR #155 не является рабочим PR check | PR #155 |
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
 | MLRS-020 | P2 | CONFIRMED | Tests | Нет host/unit/integration tests и bridge build coverage | новый |
@@ -454,9 +454,9 @@ non-zero и не может быть принят wrapper/CI за успешну
 ### MLRS-017 — STM32 build допускает false success
 
 **Приоритет:** P2  
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
-Return codes игнорируются для:
+В исходном снимке return codes игнорировались для:
 
 - compile: [`run_make_firmwares.py:641`](../tools/run_make_firmwares.py#L641);
 - link: [`run_make_firmwares.py:711`](../tools/run_make_firmwares.py#L711);
@@ -467,6 +467,21 @@ Return codes игнорируются для:
 
 Definition of done: любая compile/link/objcopy failure немедленно даёт
 non-zero; проверяется наличие и размер каждого ожидаемого artifact; CI имеет
+negative test с намеренно сломанным source/flag.
+
+Реализовано:
+
+- compile, link, size и objcopy проверяют return code и прерывают сборку через
+  `RuntimeError` при любом non-zero;
+- результат `ThreadPoolExecutor.map()` потребляется, поэтому exception из
+  compile worker не теряется и link не запускается;
+- после compile, link и objcopy каждый ожидаемый `.o`, `.elf`, `.hex` или
+  `.elrs` должен существовать и иметь ненулевой размер;
+- [`tests/host/test_stm32_build_failures.py`](../tests/host/test_stm32_build_failures.py)
+  без STM32 toolchain проверяет non-zero child exit, missing/empty artifact и
+  остановку до link при exception из parallel compile.
+
+До `FIXED` остаются representative STM32 build с реальным toolchain и CI
 negative test с намеренно сломанным source/flag.
 
 ### MLRS-018 — отсутствует работающий PR CI
