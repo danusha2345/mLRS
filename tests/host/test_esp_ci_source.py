@@ -6,6 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github/workflows/esp-builds.yml"
 STM32_WORKFLOW = REPO_ROOT / ".github/workflows/stm32-toolchains.yml"
 BRIDGE_CONFIG = REPO_ROOT / "esp/mlrs-wireless-bridge/platformio.ini"
+TOOL_REQUIREMENTS = REPO_ROOT / "requirements-tools.txt"
 
 
 class EspCiSourceTests(unittest.TestCase):
@@ -14,6 +15,7 @@ class EspCiSourceTests(unittest.TestCase):
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
         cls.stm32_workflow = STM32_WORKFLOW.read_text(encoding="utf-8")
         cls.bridge_config = BRIDGE_CONFIG.read_text(encoding="utf-8")
+        cls.tool_requirements = TOOL_REQUIREMENTS.read_text(encoding="utf-8")
 
     def test_workflow_runs_on_pull_requests_with_read_only_permissions(self):
         self.assertIn("pull_request:", self.workflow)
@@ -27,6 +29,7 @@ class EspCiSourceTests(unittest.TestCase):
 
     def test_firmware_job_uses_fail_fast_runner_and_exact_core(self):
         self.assertIn("platformio==6.1.19", self.workflow)
+        self.assertIn("intelhex==2.3.0", self.tool_requirements)
         self.assertIn("tools/run_make_esp_firmwares.py", self.workflow)
         self.assertIn("--version v1.4.03-ci --nopause", self.workflow)
         self.assertIn('wc -l)" -eq 32', self.workflow)
