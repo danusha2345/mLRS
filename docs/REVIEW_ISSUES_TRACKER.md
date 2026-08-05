@@ -50,7 +50,7 @@
 | MLRS-007 | P1 | IMPLEMENTED | RF recovery | Unexpected IRQ переводит state machine в безопасное состояние | issue #342 |
 | MLRS-008 | P1 | IMPLEMENTED | RF IRQ | Saturating pending counter передаёт IRQ из ISR атомарно | новый |
 | MLRS-009 | P1 | PARTIAL | TCP bridge | Blocking/partial `client.write()` переполняет UART RX | issue #478 |
-| MLRS-010 | P1 | PARTIAL | WLE5 timing | MAVLink/MSP loops не имеют byte/time budget | issue #283 |
+| MLRS-010 | P1 | IMPLEMENTED | WLE5 timing | MAVLink/MSP loops ограничены 64 bytes за вызов | issue #283 |
 | MLRS-011 | P1 | IMPLEMENTED | FIFO/UART | FIFO и STM32 UART принимают frame целиком либо полностью отбрасывают | новый |
 | MLRS-012 | P1 | FIXED | ARQ | Adaptive retry thresholds больше не затираются значением 1 | новый |
 | MLRS-013 | P1 | IMPLEMENTED | ARQ | Retry budget вычисляется только для fresh payload | новый |
@@ -62,6 +62,7 @@
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
 | MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner включён в CI; ESP build и external hardware coverage ещё открыты | новый |
 | MLRS-021 | P2 | IMPLEMENTED | Toolchain | GCC 11.3/14.3 проходят 55/55; broad guard заменён code-validated верхней границей 14 | issue #159 |
+| MLRS-022 | P2 | CONFIRMED | ESP build | Script жёстко привязан к Windows и допускает false success/stale artifacts | новый |
 
 ## Подробные карточки
 
@@ -419,7 +420,7 @@ Definition of done: bidirectional soak с паузами чтения GCS 0.2/1/
 ### MLRS-010 — нет execution budget в MAVLink/MSP path
 
 **Приоритет:** P1  
-**Статус:** PARTIAL  
+**Статус:** IMPLEMENTED
 **GitHub:** [issue #283](https://github.com/olliw42/mLRS/issues/283)
 
 Commit `b86cdf` ограничил обработку одним корректным message, но не количеством
@@ -439,6 +440,24 @@ Definition of done:
 - replay MAVFTP, max MAVLinkX, back-to-back frames и garbage;
 - worst-case parser time остаётся внутри pre-transmit margin;
 - многочасовой soak проходит без link drop.
+
+Реализовано:
+
+- семь входных MAVLink/MSP loops на TX и RX используют общий одноразовый
+  budget и обрабатывают не более 64 bytes за вызов;
+- parser state и непрочитанные FIFO/UART bytes сохраняются, поэтому длинный
+  frame продолжается на следующих итерациях main loop без изменения wire
+  format, payload capacity или baud rate;
+- host regression проверяет точную границу 64 bytes, garbage prefix, два
+  последовательных максимальных MAVLink frames и максимальный 768-byte MSP
+  payload без потерь, дублирования и перестановки;
+- source regression закрепляет budget во всех семи ранее неограниченных loops.
+- PlatformIO builds проходят для ESP8266 RX и ESP32 TX, WLE5 RX/TX builds — с
+  Arm GNU Toolchain 11.3.Rel1 и 14.3.Rel1.
+
+Осталось до `FIXED`: DWT/GPIO histogram и hardware soak на WLE5. Code-only
+контракт ограничивает число parser steps, но без аппаратного измерения не
+выдаётся за подтверждённый worst-case execution time.
 
 ### MLRS-011 — silent partial frame enqueue
 
@@ -793,7 +812,8 @@ Definition of done: эти suites являются required PR checks, а hardwa
 - host regression покрывает malformed/overflow MAVLinkX, UDP datagram drain,
   ARQ state/property invariants, generator exit semantics, non-interactive
   setup, STM32 build failure propagation, атомарный IRQ handoff и recovery
-  threshold;
+  threshold, а также bounded MAVLink/MSP parsing с продолжением frame между
+  вызовами;
 - source regressions запрещают radio/SPI work в DIO ISR, fatal sync mismatch,
   очистку непрочитанных IRQ bits и бесконечные BUSY waits.
 
@@ -881,6 +901,33 @@ dual-toolchain build gate, полный local 55/55 result, size comparison,
 поведение GCC 14 на STM32 TX с MAVLinkX/230400 baud остаётся `UNVERIFIED`, и
 эта ветка не заявляет hardware/production acceptance.
 
+### MLRS-022 — ESP build script допускает false success
+
+**Приоритет:** P2
+**Статус:** CONFIRMED
+
+[`run_make_esp_firmwares.py`](../tools/run_make_esp_firmwares.py) жёстко задаёт
+`C:/Users/Olli/.platformio/penv/Scripts`, не обрабатывает `--help` и неизвестные
+аргументы, а return codes `platformio` игнорирует через `os.system()`.
+
+Code-only reproduction на Linux: `python3 tools/run_make_esp_firmwares.py
+--help` попытался выполнить отсутствующий Windows `platformio.exe`, после чего
+продолжил copy stage и завершился с code 0. При наличии старого `.pio/build`
+скрипт может переупаковать stale `.bin`, не собранные из текущих исходников.
+
+Исправление:
+
+- строгий `argparse` с безопасным `--help` и code 2 для invalid arguments;
+- portable поиск `pio`/`platformio` либо явный `--platformio PATH`;
+- `subprocess.run(..., check=True)` для clean/build и прекращение copy stage
+  после первой ошибки;
+- очистка/проверка ожидаемых environments и non-empty artifacts до копирования;
+- negative host tests для missing tool, compile failure и stale build tree.
+
+Definition of done: Linux/Windows runner либо создаёт полный набор текущих ESP
+artifacts, либо завершается non-zero до copy stage; stale `.bin` не может быть
+принят за успешную сборку.
+
 ## Исправленные или недоказанные первоначальные выводы
 
 - `SERIAL.write(buf,len)` на ESP32 core 3.3.10 не делает silent partial write:
@@ -900,11 +947,11 @@ dual-toolchain build gate, полный local 55/55 result, size comparison,
 
 Текущий рабочий scope — только код и автоматические проверки:
 
-1. MLRS-010: bounded WLE5 execution budgets и host timing model.
-2. MLRS-009: bounded TCP queues/backpressure и model/host regressions без
+1. MLRS-009: bounded TCP queues/backpressure и model/host regressions без
    заявления hardware A/B #478.
-3. MLRS-015/018/020: завершить CI coverage для ESP/bridge и Windows setup.
-4. MLRS-019: запретить antenna2-only на всех code/API boundaries либо явно
+2. MLRS-015/018/020/022: сделать portable fail-fast ESP build, затем завершить
+   CI coverage для ESP/bridge и Windows setup.
+3. MLRS-019: запретить antenna2-only на всех code/API boundaries либо явно
    документировать limitation.
 
 Hardware validation MLRS-002–008, MLRS-011/014 и runtime acceptance MLRS-021

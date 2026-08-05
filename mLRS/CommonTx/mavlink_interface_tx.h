@@ -15,6 +15,7 @@
 #include "../Common/protocols/ardupilot_protocol.h"
 #include "../Common/thirdparty/mavlinkx.h"
 #include "../Common/libs/fifo.h"
+#include "../Common/libs/parser_budget.h"
 #define FASTMAVLINK_ROUTER_LINKS_MAX  4
 #define FASTMAVLINK_ROUTER_COMPONENTS_MAX  12
 #define FASTMAVLINK_ROUTER_LINK_PROPERTY_DEFAULT  FASTMAVLINK_ROUTER_LINK_PROPERTY_FLAG_ALWAYS_SEND_HEARTBEAT
@@ -302,11 +303,12 @@ void tTxMavlink::parse_serial_in_link_out(void)
 {
     // parse ser in -> link out
     fmav_result_t result;
+    tParserByteBudget budget;
 
 if (!do_router()) {
     // without router, parse ser in -> link out
     if (fifo_link_out.HasSpace(290)) { // we have space for a full MAVLink message, so can safely parse
-        while (ser->available()) {
+        while (ser->available() && budget.Take()) {
             char c = ser->getc();
             if (fmav_parse_and_check_to_frame_buf(&result, buf_ser_in, &status_ser_in, c)) {
                 if (result.res == FASTMAVLINK_PARSE_RESULT_OK) {
@@ -332,7 +334,7 @@ if (!do_router()) {
         if ((scheduled_ser == 0) && !ser->available()) scheduled_ser = 1; // take next if nothing to do
         if ((scheduled_ser == 1) && !ser2->available()) scheduled_ser = 0; // take next if nothing to do
 
-        while ((scheduled_ser == 0) && ser->available()) {
+        while ((scheduled_ser == 0) && ser->available() && budget.Take()) {
             char c = ser->getc();
             if (fmav_parse_and_check_to_frame_buf(&result, buf_ser_in, &status_ser_in, c)) {
                 fmav_router_handle_message(1, &result);
@@ -353,7 +355,7 @@ if (!do_router()) {
             }
         }
 
-        while ((scheduled_ser == 1) && ser2->available()) {
+        while ((scheduled_ser == 1) && ser2->available() && budget.Take()) {
             char c = ser2->getc();
             if (fmav_parse_and_check_to_frame_buf(&result, buf_ser2_in, &status_ser2_in, c)) {
                 fmav_router_handle_message(2, &result);
@@ -382,8 +384,9 @@ if (!do_router()) {
 void tTxMavlink::parse_link_in_serial_out(void)
 {
 fmav_result_t result;
+    tParserByteBudget budget;
 
-    while (fifo_link_in.Available()) {
+    while (fifo_link_in.Available() && budget.Take()) {
         char c = fifo_link_in.Get();
 
         // parse link in -> serial out

@@ -15,6 +15,7 @@
 #include "../Common/libs/filters.h"
 #include "../Common/thirdparty/mavlinkx.h"
 #include "../Common/libs/fifo.h"
+#include "../Common/libs/parser_budget.h"
 
 
 extern volatile uint32_t millis32(void);
@@ -350,8 +351,9 @@ void tRxMavlink::parse_serial_in_link_out(void)
 {
     // parse serial in -> link out
     fmav_result_t result;
+    tParserByteBudget budget;
     if (fifo_link_out.HasSpace(290)) { // we have space for a full MAVLink message, so can safely parse
-        while (serial->available()) {
+        while (serial->available() && budget.Take()) {
             char c = serial->getc();
             bytes_parser_in++; // memorize it is still in processing
             fmav_parse_and_check_to_frame_buf(&result, buf_serial_in, &status_serial_in, c);

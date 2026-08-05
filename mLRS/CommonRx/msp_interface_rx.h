@@ -15,6 +15,7 @@
 
 
 #include "../Common/libs/fifo.h"
+#include "../Common/libs/parser_budget.h"
 #include "../Common/protocols/msp_protocol.h"
 #include "../Common/thirdparty/mspx.h"
 
@@ -249,8 +250,9 @@ void tRxMsp::FrameLost(void)
 void tRxMsp::parse_serial_in_link_out(void)
 {
     // parse serial in -> link out
+    tParserByteBudget budget;
     if (fifo_link_out.HasSpace(MSP_FRAME_LEN_MAX + 16)) { // we have space for a full MSP message, so can safely parse
-        while (serial->available()) {
+        while (serial->available() && budget.Take()) {
             char c = serial->getc();
             if (msp_parse_to_msg(&msp_msg_ser_in, &status_ser_in, c)) {
                 bool send = true;
