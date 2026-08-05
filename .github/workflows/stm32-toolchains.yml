@@ -2,13 +2,6 @@ name: STM32 toolchains
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/stm32-toolchains.yml"
-      - "mLRS/**"
-      - "run_setup.py"
-      - "requirements-tools.txt"
-      - "tests/**"
-      - "tools/**"
   push:
     branches:
       - main

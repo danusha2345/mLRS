@@ -193,6 +193,16 @@ class EspBuildFailureTest(unittest.TestCase):
 
         self.assertEqual(suffix, "-@abc12345")
 
+    def test_ci_version_suffix_keeps_numeric_patch_semantics(self):
+        with mock.patch.object(
+            self.build,
+            "git_output",
+            side_effect=["", "abc12345"],
+        ):
+            suffix = self.build.version_suffix(REPO_ROOT, "v1.4.03-ci")
+
+        self.assertEqual(suffix, "-@abc12345")
+
 
 if __name__ == "__main__":
     unittest.main()

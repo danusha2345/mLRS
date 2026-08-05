@@ -58,9 +58,9 @@
 | MLRS-015 | P2 | IN_PROGRESS | Setup | Non-interactive path и pinned dependencies проверены на Linux; Windows ещё открыт | PR #228 |
 | MLRS-016 | P2 | FIXED | Generator | Exception печатается в stderr и завершает generator с code 1 | новый |
 | MLRS-017 | P2 | IMPLEMENTED | STM32 build | Fail-fast для compile/link/size/objcopy и проверка artifacts | новый |
-| MLRS-018 | P2 | IN_PROGRESS | CI | Добавлен dual-toolchain STM32 workflow; ESP/bridge и required-check policy ещё открыты | PR #155 |
+| MLRS-018 | P2 | IMPLEMENTED | CI | PR workflows покрывают STM32, 32 ESP targets и три AT-mode bridge variants | PR #155 |
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
-| MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner включён в CI; ESP build и external hardware coverage ещё открыты | новый |
+| MLRS-020 | P2 | IN_PROGRESS | Tests | Host, ESP и bridge CI добавлены; frame/hardware coverage ещё открыто | новый |
 | MLRS-021 | P2 | IMPLEMENTED | Toolchain | GCC 11.3/14.3 проходят 55/55; broad guard заменён code-validated верхней границей 14 | issue #159 |
 | MLRS-022 | P2 | IMPLEMENTED | ESP build | Portable fail-fast runner проверяет полный набор текущих artifacts | новый |
 
@@ -432,7 +432,9 @@ Definition of done: bidirectional soak с паузами чтения GCS 0.2/1/
 - host test с ASan/UBSan проверяет budget, заполнение, partial writes, wrap и
   saturation; source regression запрещает возврат unbounded
   `while(client.available())`;
-- полный bridge собран для ESP32 Arduino Core 3.3.8 и ESP8266 Core 3.1.2;
+- полный AT-mode bridge собран для ESP32 Pico/ESP32-C3 Arduino Core 3.3.8 и
+  ESP8266 Core 3.1.2, поэтому обе platform-specific TCP write ветки реально
+  проходят compiler/linker;
   обнаруженная ESP8266-зависимость от автогенерации прототипа устранена явным
   объявлением `setup_wifipower()`.
 
@@ -754,7 +756,7 @@ negative test с намеренно сломанным source/flag.
 ### MLRS-018 — PR CI покрывает не все build surfaces
 
 **Приоритет:** P2  
-**Статус:** IN_PROGRESS
+**Статус:** IMPLEMENTED
 **GitHub:** [PR #155](https://github.com/olliw42/mLRS/pull/155)
 
 В исходном снимке на `main` не было `.github/workflows`. Старый PR #155:
@@ -786,8 +788,25 @@ Definition of done:
 - workflow проходит локальную проверку `actionlint`, а его setup/build команды
   воспроизведены на чистом Linux venv.
 
-Открыто: первый реальный GitHub Actions run, required-check policy, ESP matrix,
-bridge variants и Windows setup.
+Добавлен второй CI layer:
+
+- [`.github/workflows/esp-builds.yml`](../.github/workflows/esp-builds.yml)
+  запускается на `pull_request`, `main` push и вручную с read-only permissions;
+- PlatformIO Core закреплён на `6.1.19`; firmware job генерирует fastMAVLink,
+  запускает общий host suite, fail-fast собирает 32/32 ESP environments и
+  требует ровно 32 непустых опубликованных binaries;
+- отдельный bridge job изолирован от official ESP Core 2.x matrix и собирает
+  три AT-mode variants: ESP32-C3, ESP32 Pico и ESP8266; AT-mode включает все
+  доступные для платформы TCP/UDP/UDPSTA/UDPCl/BLE/BT/ESP-NOW handlers;
+- [`esp/mlrs-wireless-bridge/platformio.ini`](../esp/mlrs-wireless-bridge/platformio.ini)
+  закрепляет pioarduino Arduino Core 3.3.8, ESP8266 Core 3.1.2, `no_ota.csv` и
+  ESP8266 Preferences 2.2.2;
+- workflow проходит `actionlint` и четыре source regressions; точные bridge
+  команды прошли в полностью новом `PLATFORMIO_CORE_DIR`, а firmware runner —
+  полную локальную matrix 32/32.
+
+Осталось до `FIXED`: первый реальный GitHub Actions run, включение обоих job как
+required branch-protection checks и Windows setup validation.
 
 ### MLRS-019 — single-SPI antenna2-only остаётся незавершённой
 
@@ -840,9 +859,12 @@ Definition of done: эти suites являются required PR checks, а hardwa
   вызовами;
 - source regressions запрещают radio/SPI work в DIO ISR, fatal sync mismatch,
   очистку непрочитанных IRQ bits и бесконечные BUSY waits.
+- отдельный PR workflow запускает host suite, полную ESP matrix 32/32 и три
+  AT-mode bridge variants на ESP32-C3, ESP32 Pico и ESP8266; каждый ожидаемый
+  binary проверяется на наличие и ненулевой размер.
 
-Открыто: frame suites, required PR checks, полный bridge/STM32 build
-coverage и hardware/timing tests из минимальной программы выше.
+Открыто: отдельные frame suites, первый реальный GitHub run/required-check
+policy и hardware/timing tests из минимальной программы выше.
 
 ### MLRS-021 — STM32 toolchain искусственно зафиксирован на GCC 11
 
@@ -997,7 +1019,8 @@ platform-specific acceptance сохраняется как `IMPLEMENTED`, а н�
 
 Текущий рабочий scope — только код и автоматические проверки:
 
-1. MLRS-015/018/020: завершить CI coverage для ESP/bridge и Windows setup.
+1. MLRS-015/018/020: проверить workflows на GitHub, включить required checks,
+   завершить frame coverage и Windows setup.
 2. MLRS-019: запретить antenna2-only на всех code/API boundaries либо явно
    документировать limitation.
 

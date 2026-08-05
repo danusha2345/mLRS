@@ -175,6 +175,16 @@ python3 tools/run_make_esp_firmwares.py \
 или отсутствие хотя бы одного ожидаемого artifact завершают команду non-zero до
 замены ранее опубликованного набора.
 
+Wireless bridge имеет отдельную pinned AT-mode matrix, которая компилирует все
+доступные protocol handlers для ESP32, ESP32-C3 и ESP8266:
+
+```bash
+pio run --project-dir esp/mlrs-wireless-bridge
+```
+
+Те же 32 firmware targets, host regressions и три bridge variants запускаются
+workflow `ESP builds` на pull request и push в `main`.
+
 The command-line setup above and the dual-toolchain build have been validated
 on Linux. Automated Windows setup remains pending. The upstream development
 guides describe the IDE workflows:

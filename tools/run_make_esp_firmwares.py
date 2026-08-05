@@ -83,9 +83,13 @@ def git_output(project_dir, *args, required=True):
 
 def version_suffix(project_dir, version):
     try:
-        patch = int(version.split('.')[2])
-    except (IndexError, ValueError):
+        patch_component = version.split('.')[2]
+    except IndexError:
         raise UsageError('version must contain a numeric patch component: %s' % version)
+    patch_match = re.match(r'(\d+)', patch_component)
+    if not patch_match:
+        raise UsageError('version must contain a numeric patch component: %s' % version)
+    patch = int(patch_match.group(1))
 
     branch = git_output(project_dir, 'branch', '--show-current', required=False)
     branch_suffix = ''
