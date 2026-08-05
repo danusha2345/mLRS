@@ -27,6 +27,14 @@ You of course use the project fully at your own risk.
 
 There is still plenty of room for ideas and improvement, and in this sense the project is work in progress. It is however fair to call it stable and robust, and to perform quite well. 
 
+> **Development build notice (`fix/review-issues`):** This branch introduces an
+> ARQ-v2 wire-format change. Transmitter and receiver firmware from this branch
+> must be installed as a matched pair; mixed upstream/ARQ-v2 pairs are rejected.
+> The changes have passed host tests and reproducible firmware builds, but their
+> remaining radio and timing acceptance tests require hardware and are not yet
+> complete. Do not treat this development build as flight-critical production
+> firmware until that hardware validation has been performed.
+
 The mLRS system also provides a high level of usability such as a variety of options for input/output, parameter setting via the mLRS transmitter, optimization for ArduPilot/PX4 and INAV systems, wireless connection to ground control stations like MissionPlanner or QGC, or support of the Yaapu telemetry app without extra hazzles. It also integrates well with the mTX (formerly MAVLink for OpenTx) project, which yields a most fluid user experience.
 
 It supports the SX1280/1, SX1276, SX1262, LLCC68, LR1121 and LR2021 Semtech chips, and thus the 2.4 GHz, 915/868 MHz and 433 MHz/70 cm frequency bands.
@@ -119,7 +127,38 @@ Once your hardware is flashed, you can use the mLRS transmitter to configure the
 
 ## Software: Installation Bits and Bops ##
 
-mLRS uses STM32CubeIDE for STM32 targets, and PlatformIO with VSCode for ESP32 and ESP8285 targets. For details see:
+mLRS supports STM32CubeIDE for STM32 targets, and PlatformIO with VSCode for
+ESP32 and ESP8285 targets. This branch also provides a reproducible Linux
+command-line setup and STM32 build path. Install the pinned generator
+dependencies, generate the required sources, and run the host regressions with:
+
+```bash
+python3 -m pip install --require-hashes -r requirements-tools.txt
+python3 run_setup.py --copy --mavlink --dronecan --silent --no-pause
+tests/host/run_host_tests.sh
+```
+
+Arm GNU Toolchain 11.3.Rel1 remains the reference compiler and 14.3.Rel1 is
+code-validated by the full STM32 build matrix. GCC versions newer than 14 are
+rejected until they receive a separate validation pass. A single STM32 target
+can be built without STM32CubeIDE as follows:
+
+```bash
+python3 tools/run_make_firmwares.py \
+  --toolchain-dir /path/to/arm-none-eabi/bin \
+  --target rx-matek-mr24-30-g431kb \
+  --nopause
+```
+
+ESP targets can be built directly with PlatformIO, for example:
+
+```bash
+pio run -e rx-generic-2400
+```
+
+The command-line setup above and the dual-toolchain build have been validated
+on Linux. Automated Windows setup remains pending. The upstream development
+guides describe the IDE workflows:
 
 - [STM32 Development](https://github.com/olliw42/mLRS-docu/blob/main/docs/STM32_DEVELOPMENT.md)
 - [ESP Development](https://github.com/olliw42/mLRS-docu/blob/main/docs/ESP_DEVELOPMENT.md)
