@@ -114,6 +114,7 @@
 #include "../Common/channel_order.h"
 #include "../Common/diversity.h"
 #include "../Common/arq.h"
+#include "../Common/radio_irq.h"
 #include "../Common/tasks.h"
 //#include "../Common/time_stats.h" // un-comment if you want to use
 //#include "../Common/test.h" // un-comment if you want to compile for board test
@@ -295,49 +296,74 @@ void init_hw(void)
 // SX12xx
 //-------------------------------------------------------
 
-volatile uint32_t irq_status;
-volatile uint32_t irq2_status;
+tRadioIrqPending irq_pending;
+tRadioIrqPending irq2_pending;
+tRadioErrorTracker radio1_errors;
+tRadioErrorTracker radio2_errors;
+uint32_t irq_status;
+uint32_t irq2_status;
 
 IRQHANDLER(
 void SX_DIO_EXTI_IRQHandler(void)
 {
     sx_dio_exti_isr_clearflag();
-    irq_status = sx.GetAndClearIrqStatus(SX_IRQ_ALL);
-    if (irq_status & SX_IRQ_RX_DONE) {
-        if (bind.IsInBind()) {
-            uint64_t bind_signature;
-            sx.ReadBuffer(0, (uint8_t*)&bind_signature, 8);
-            if (bind_signature != bind.RxSignature) irq_status = 0; // not binding frame, so ignore it
-        } else {
-            uint16_t sync_word;
-            sx.ReadBuffer(0, (uint8_t*)&sync_word, 2); // rxStartBufferPointer is always 0, so no need for sx.GetRxBufferStatus()
-            if (sync_word != Config.FrameSyncWord) irq_status = 0; // not for us, so ignore it
-        }
-    }
+    irq_pending.SetFromIsr();
 })
 #ifdef USE_SX2
 IRQHANDLER(
 void SX2_DIO_EXTI_IRQHandler(void)
 {
     sx2_dio_exti_isr_clearflag();
-    irq2_status = sx2.GetAndClearIrqStatus(SX2_IRQ_ALL);
-    if (irq2_status & SX2_IRQ_RX_DONE) {
+    irq2_pending.SetFromIsr();
+})
+#endif
+
+
+uint32_t sx_irq_status_from_radio(void)
+{
+    uint32_t status = sx.GetAndClearIrqStatusSafe(SX_IRQ_ALL);
+    if (sx.BusyTimedOut()) return 0;
+
+    if (status & SX_IRQ_RX_DONE) {
+        if (bind.IsInBind()) {
+            uint64_t bind_signature;
+            sx.ReadBuffer(0, (uint8_t*)&bind_signature, 8);
+            if (bind_signature != bind.RxSignature) status &= ~SX_IRQ_RX_DONE;
+        } else {
+            uint16_t sync_word;
+            sx.ReadBuffer(0, (uint8_t*)&sync_word, 2); // rxStartBufferPointer is always 0, so no need for sx.GetRxBufferStatus()
+            if (sync_word != Config.FrameSyncWord) status &= ~SX_IRQ_RX_DONE;
+        }
+    }
+    return sx.BusyTimedOut() ? 0 : status;
+}
+
+#ifdef USE_SX2
+uint32_t sx2_irq_status_from_radio(void)
+{
+    uint32_t status = sx2.GetAndClearIrqStatusSafe(SX2_IRQ_ALL);
+    if (sx2.BusyTimedOut()) return 0;
+
+    if (status & SX2_IRQ_RX_DONE) {
         if (bind.IsInBind()) {
             uint64_t bind_signature;
             sx2.ReadBuffer(0, (uint8_t*)&bind_signature, 8);
-            if (bind_signature != bind.RxSignature) irq2_status = 0;
+            if (bind_signature != bind.RxSignature) status &= ~SX2_IRQ_RX_DONE;
         } else {
             uint16_t sync_word;
             sx2.ReadBuffer(0, (uint8_t*)&sync_word, 2);
-            if (sync_word != Config.FrameSyncWord) irq2_status = 0;
+            if (sync_word != Config.FrameSyncWord) status &= ~SX2_IRQ_RX_DONE;
         }
     }
-})
+    return sx2.BusyTimedOut() ? 0 : status;
+}
 #endif
 
 
 uint8_t link_rx1_status;
 uint8_t link_rx2_status;
+
+void radio_recovery_note_error(uint8_t antenna);
 
 
 //-- Tx/Rx cmd frame handling
@@ -490,6 +516,7 @@ uint8_t payload_len = 0;
     tFrameStats frame_stats;
     frame_stats.seq_no = stats.transmit_seq_no;
     frame_stats.ack = rarq.AckSeqNo();
+    frame_stats.arq_discontinuity = rarq.AckDiscontinuity();
     frame_stats.antenna = stats.last_antenna;
     frame_stats.transmit_antenna = antenna;
     frame_stats.rssi = stats.GetLastRssi();
@@ -531,7 +558,7 @@ void process_received_frame(bool do_payload, tRxFrame* const frame)
     if (!accept_payload) return; // frame has no fresh payload
 
     // handle cmd frame
-    if (frame->status.frame_type == FRAME_TYPE_TX_RX_CMD) {
+    if (frame_type_value(frame->status.frame_type) == FRAME_TYPE_TX_RX_CMD) {
         process_received_rxcmdframe(frame);
         return;
     }
@@ -570,7 +597,9 @@ tRxFrame* frame;
 
     // handle receive ARQ, must come before process_received_frame()
     if (rx_status == RX_STATUS_VALID) {
-        rarq.Received(frame->status.seq_no);
+        rarq.Received(
+            frame->status.seq_no,
+            frame_type_has_discontinuity(frame->status.frame_type));
     } else {
         rarq.FrameMissed();
     }
@@ -648,7 +677,10 @@ uint8_t rx_status = RX_STATUS_INVALID; // this also signals that a frame was rec
 //dbg.puts("fail a");dbg.putc(antenna+'0');dbg.puts(" ");dbg.puts(u8toHEX_s(res));dbg.putc('\n');
     }
 
-    if (res == CHECK_ERROR_SYNCWORD) return RX_STATUS_INVALID; // must not happen !
+    if (res == CHECK_ERROR_SYNCWORD) {
+        radio_recovery_note_error(antenna);
+        return RX_STATUS_INVALID;
+    }
 
     if (res == CHECK_OK) {
         rx_status = RX_STATUS_VALID;
@@ -688,6 +720,91 @@ bool connect_occured_once;
 
 bool rc_data_updated;
 
+bool radio_recovery_requested;
+uint32_t radio_reinit_count;
+uint32_t radio_reinit_failure_count;
+bool radio_reinit_retry_scheduled;
+uint32_t radio_reinit_retry_at_ms;
+
+
+void radio_recovery_note_error(uint8_t antenna)
+{
+    bool reinit = (antenna == ANTENNA_1) ? radio1_errors.NoteError() : radio2_errors.NoteError();
+    if (reinit) radio_recovery_requested = true;
+}
+
+
+void radio_recovery_note_success(uint8_t antenna)
+{
+    if (antenna == ANTENNA_1) {
+        radio1_errors.NoteSuccess();
+    } else {
+        radio2_errors.NoteSuccess();
+    }
+}
+
+
+bool radio_reinitialize(void)
+{
+    bool ok = true;
+
+    IF_SX(
+        sx.Init();
+        if (sx.BusyTimedOut() || !sx.isOk() || sx.BusyTimedOut()) {
+            ok = false;
+        } else {
+            sx.StartUp(&Config.Sx);
+            if (sx.BusyTimedOut()) ok = false;
+        }
+    )
+    IF_SX2(
+        sx2.Init();
+        if (sx2.BusyTimedOut() || !sx2.isOk() || sx2.BusyTimedOut()) {
+            ok = false;
+        } else {
+            sx2.StartUp(&Config.Sx2);
+            if (sx2.BusyTimedOut()) ok = false;
+        }
+    )
+
+    irq_pending.Init();
+    irq2_pending.Init();
+    irq_status = irq2_status = 0;
+    link_rx1_status = link_rx2_status = RX_STATUS_NONE;
+    link_tx_status = TX_STATUS_NONE;
+    link_state = LINK_STATE_IDLE;
+    isInTimeGuard = false;
+    doPreTransmit = false;
+
+    return ok;
+}
+
+
+bool radio_recovery_service(void)
+{
+    bool busy_timed_out = false;
+    IF_SX(if (sx.BusyTimedOut()) busy_timed_out = true;)
+    IF_SX2(if (sx2.BusyTimedOut()) busy_timed_out = true;)
+    if (busy_timed_out) radio_recovery_requested = true;
+
+    if (!radio_recovery_requested) return false;
+    if (radio_reinit_retry_scheduled &&
+        !radio_recovery_deadline_reached(millis32(), radio_reinit_retry_at_ms)) return true;
+    radio_reinit_retry_scheduled = false;
+
+    if (radio_reinitialize()) {
+        radio_recovery_requested = false;
+        radio1_errors.NoteSuccess();
+        radio2_errors.NoteSuccess();
+        radio_reinit_count++;
+    } else {
+        radio_reinit_failure_count++;
+        radio_reinit_retry_scheduled = true;
+        radio_reinit_retry_at_ms = millis32() + RADIO_REINIT_RETRY_DELAY_MS;
+    }
+    return true;
+}
+
 
 bool connected(void)
 {
@@ -719,6 +836,15 @@ RESTARTCONTROLLER
     // start up sx
     if (!sx.isOk()) { FAILALWAYS(BLINK_RD_GR_OFF, "Sx not ok"); } // fail!
     if (!sx2.isOk()) { FAILALWAYS(BLINK_GR_RD_OFF, "Sx2 not ok"); } // fail!
+    irq_pending.Init();
+    irq2_pending.Init();
+    radio1_errors.Init();
+    radio2_errors.Init();
+    radio_recovery_requested = false;
+    radio_reinit_count = 0;
+    radio_reinit_failure_count = 0;
+    radio_reinit_retry_scheduled = false;
+    radio_reinit_retry_at_ms = 0;
     irq_status = irq2_status = 0;
     IF_SX(sx.StartUp(&Config.Sx));
     IF_SX2(sx2.StartUp(&Config.Sx2));
@@ -831,6 +957,17 @@ INITCONTROLLER_END
 
     //-- SX handling
 
+    if (radio_recovery_service()) return;
+
+IF_SX(
+    uint8_t pending_count = irq_pending.Take();
+    while (pending_count--) irq_status |= sx_irq_status_from_radio();
+);
+IF_SX2(
+    uint8_t pending_count = irq2_pending.Take();
+    while (pending_count--) irq2_status |= sx2_irq_status_from_radio();
+);
+
     switch (link_state) {
     case LINK_STATE_IDLE:
         break;
@@ -871,32 +1008,29 @@ INITCONTROLLER_END
 
 IF_SX(
     if (irq_status) {
+        uint32_t status = irq_status;
+        irq_status = 0;
+
         if (link_state == LINK_STATE_TRANSMIT_WAIT) {
-            if (irq_status & SX_IRQ_TX_DONE) {
-                irq_status = 0;
+            if (status & SX_IRQ_TX_DONE) {
+                status &= ~SX_IRQ_TX_DONE;
+                radio_recovery_note_success(ANTENNA_1);
                 link_tx_status |= TX_STATUS_TX1_DONE;
                 if (!Config.IsDualBand || (link_tx_status & TX_STATUS_TX2_DONE)) { link_state = LINK_STATE_RECEIVE; }
                 DBG_MAIN_SLIM(dbg.puts("1!");)
             }
         } else
         if (link_state == LINK_STATE_RECEIVE_WAIT) {
-            if (irq_status & SX_IRQ_RX_DONE) {
-                irq_status = 0;
+            if (status & SX_IRQ_RX_DONE) {
+                status &= ~SX_IRQ_RX_DONE;
+                radio_recovery_note_success(ANTENNA_1);
                 link_rx1_status = do_receive(ANTENNA_1);
                 DBG_MAIN_SLIM(dbg.puts("1<");)
             }
         }
 
-        if (irq_status) { // these should not happen
-            if (irq_status & SX_IRQ_TIMEOUT) {
-            }
-            if (irq_status & SX_IRQ_RX_DONE) {
-                FAIL_WSTATE(BLINK_RD_GR_OFF, "IRQ RX DONE FAIL", irq_status, link_state, link_rx1_status, link_rx2_status);
-            }
-            if (irq_status & SX_IRQ_TX_DONE) {
-                FAIL_WSTATE(BLINK_GR_RD_OFF, "IRQ TX DONE FAIL", irq_status, link_state, link_rx1_status, link_rx2_status);
-            }
-            irq_status = 0;
+        if (status) {
+            radio_recovery_note_error(ANTENNA_1);
             link_state = LINK_STATE_IDLE;
             link_rx1_status = link_rx2_status = RX_STATUS_NONE;
             DBG_MAIN_SLIM(dbg.puts("1?");)
@@ -905,32 +1039,29 @@ IF_SX(
 );
 IF_SX2(
     if (irq2_status) {
+        uint32_t status = irq2_status;
+        irq2_status = 0;
+
         if (link_state == LINK_STATE_TRANSMIT_WAIT) {
-            if (irq2_status & SX2_IRQ_TX_DONE) {
-                irq2_status = 0;
+            if (status & SX2_IRQ_TX_DONE) {
+                status &= ~SX2_IRQ_TX_DONE;
+                radio_recovery_note_success(ANTENNA_2);
                 link_tx_status |= TX_STATUS_TX2_DONE;
                 if (!Config.IsDualBand || (link_tx_status & TX_STATUS_TX1_DONE)) { link_state = LINK_STATE_RECEIVE; }
                 DBG_MAIN_SLIM(dbg.puts("2!");)
             }
         } else
         if (link_state == LINK_STATE_RECEIVE_WAIT) {
-            if (irq2_status & SX2_IRQ_RX_DONE) {
-                irq2_status = 0;
+            if (status & SX2_IRQ_RX_DONE) {
+                status &= ~SX2_IRQ_RX_DONE;
+                radio_recovery_note_success(ANTENNA_2);
                 link_rx2_status = do_receive(ANTENNA_2);
                 DBG_MAIN_SLIM(dbg.puts("2<");)
             }
         }
 
-        if (irq2_status) { // this should not happen
-            if (irq2_status & SX2_IRQ_TIMEOUT) {
-            }
-            if (irq2_status & SX2_IRQ_RX_DONE) {
-                FAIL_WSTATE(BLINK_RD_GR_ON, "IRQ2 RX DONE FAIL", irq2_status, link_state, link_rx1_status, link_rx2_status);
-            }
-            if (irq2_status & SX2_IRQ_TX_DONE) {
-                FAIL_WSTATE(BLINK_GR_RD_ON, "IRQ2 TX DONE FAIL", irq2_status, link_state, link_rx1_status, link_rx2_status);
-            }
-            irq2_status = 0;
+        if (status) {
+            radio_recovery_note_error(ANTENNA_2);
             link_state = LINK_STATE_IDLE;
             link_rx1_status = link_rx2_status = RX_STATUS_NONE;
             DBG_MAIN_SLIM(dbg.puts("2?");)
@@ -1271,4 +1402,3 @@ IF_IN(
     }
 
 }//end of main_loop
-

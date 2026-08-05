@@ -144,6 +144,7 @@ class Lr20xxDriverCommon : public Lr20xxDriverBase
         lora_configuration = nullptr;
         gfsk_configuration = nullptr;
         flrc_configuration = nullptr;
+        busy_timed_out = false;
     }
 
     //-- high level API functions
@@ -159,6 +160,14 @@ class Lr20xxDriverCommon : public Lr20xxDriverBase
 
         return true;
     }
+
+    uint32_t GetAndClearIrqStatusSafe(uint32_t dummy)
+    {
+        (void)dummy;
+        return Lr20xxDriverBase::GetAndClearIrqStatus();
+    }
+
+    bool BusyTimedOut(void) const { return busy_timed_out; }
 
     void SetLoraConfiguration(const tSxLoraConfiguration* const config)
     {
@@ -518,6 +527,8 @@ class Lr20xxDriverCommon : public Lr20xxDriverBase
 
   protected:
     tSxGlobalConfig* gconfig;
+    bool busy_timed_out;
+    void SetBusyTimeout(void) { busy_timed_out = true; }
 
   private:
     const tSxLoraConfiguration* lora_configuration;
@@ -574,7 +585,15 @@ class Lr20xxDriver : public Lr20xxDriverCommon
 
     void WaitOnBusy(void) override
     {
-        while (sx_busy_read()) { __NOP(); };
+        if (BusyTimedOut()) return;
+        uint16_t tstart_us = micros16();
+        while (sx_busy_read()) {
+            if ((uint16_t)(micros16() - tstart_us) >= SX_BUSY_TIMEOUT_US) {
+                SetBusyTimeout();
+                return;
+            }
+            __NOP();
+        }
     }
 
     void SpiSelect(void) override
@@ -694,7 +713,15 @@ class Lr20xxDriver2 : public Lr20xxDriverCommon
 
     void WaitOnBusy(void) override
     {
-        while (sx2_busy_read()) { __NOP(); };
+        if (BusyTimedOut()) return;
+        uint16_t tstart_us = micros16();
+        while (sx2_busy_read()) {
+            if ((uint16_t)(micros16() - tstart_us) >= SX_BUSY_TIMEOUT_US) {
+                SetBusyTimeout();
+                return;
+            }
+            __NOP();
+        }
     }
 
     void SpiSelect(void) override

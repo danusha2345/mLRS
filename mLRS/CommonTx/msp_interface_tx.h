@@ -16,6 +16,7 @@
 
 #include "../Common/protocols/msp_protocol.h"
 #include "../Common/thirdparty/mspx.h"
+#include "../Common/libs/parser_budget.h"
 
 
 extern volatile uint32_t millis32(void);
@@ -108,8 +109,9 @@ void tTxMsp::Do(void)
 void tTxMsp::parse_serial_in_link_out(void)
 {
     // parse serial in -> link out
+    tParserByteBudget budget;
     if (fifo_link_out.HasSpace(MSP_FRAME_LEN_MAX + 16)) { // we have space for a full MSP message, so can safely parse
-        while (ser->available()) {
+        while (ser->available() && budget.Take()) {
             char c = ser->getc();
             if (msp_parse_to_msg(&msp_msg_ser_in, &status_ser_in, c)) {
                 uint16_t len = msp_msg_to_frame_bufX(_buf, &msp_msg_ser_in); // converting to mspX
@@ -207,4 +209,3 @@ void tTxMsp::flush(void)
 
 
 #endif // MSP_INTERFACE_TX_H
-

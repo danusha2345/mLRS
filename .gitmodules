@@ -6,7 +6,7 @@
 	url = https://github.com/olliw42/fastmavlink.git
 [submodule "mLRS/modules/stm32ll-lib"]
 	path = mLRS/modules/stm32ll-lib
-	url = https://github.com/olliw42/stm32ll-lib.git
+	url = https://github.com/danusha2345/stm32ll-lib.git
 [submodule "mLRS/modules/sx12xx-lib"]
 	path = mLRS/modules/sx12xx-lib
 	url = https://github.com/olliw42/sx12xx-lib.git

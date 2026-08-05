@@ -12,12 +12,14 @@
  version 13.07.2026
 ********************************************************
 '''
+import argparse
 import os
 import pathlib
-import shutil
 import re
-import sys
+import shlex
+import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -26,6 +28,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 #ST_DIR = os.path.join("C:/",'ST','STM32CubeIDE','STM32CubeIDE','plugins')
 #GNU_DIR = 'com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.10.3-2021.10.win32_1.0.0.202111181127'
+
+MAX_CODE_VALIDATED_GCC_MAJOR = 14
+
 
 def findSTM32CubeIDEGnuTools(search_root):
     st_dir = ''
@@ -64,9 +69,15 @@ def findSTM32CubeIDEGnuTools(search_root):
         for dirpath in os.listdir(st_dir):
             if 'mcu.externaltools.gnu-tools-for-stm32' in dirpath and gnu_dir_os_name in dirpath:
                 # the numbers after the string 'gnu-tools-for-stm32' contains the gnutools ver number, like .11.3
-                gnuver = int(dirpath.split('gnu-tools-for-stm32',1)[1][1:3])
-                if gnuver >= 12:
-                    print("WARNING: gnu-tools ver >= 12 found but skipped")
+                gnuver_match = re.search(r'gnu-tools-for-stm32\.(\d+)', dirpath)
+                if not gnuver_match:
+                    continue
+                gnuver = int(gnuver_match.group(1))
+                if gnuver > MAX_CODE_VALIDATED_GCC_MAJOR:
+                    print(
+                        'WARNING: gnu-tools ver '
+                        f'> {MAX_CODE_VALIDATED_GCC_MAJOR} found but skipped'
+                    )
                     continue
                 # the string after the last . contains a datum plus some other number
                 ver = int(dirpath[dirpath.rindex('.')+1:])
@@ -81,9 +92,37 @@ def findSTM32CubeIDEGnuTools(search_root):
 
 
 GCC_DIR = ''
+TOOLCHAIN_PROGRAMS = (
+    'arm-none-eabi-gcc',
+    'arm-none-eabi-g++',
+    'arm-none-eabi-size',
+    'arm-none-eabi-objcopy',
+)
 
-# do this only when called from main context
-if __name__ == "__main__":
+
+def validate_toolchain_dir(toolchain_dir):
+    toolchain_dir = os.path.abspath(os.path.expanduser(toolchain_dir))
+    if not os.path.isdir(toolchain_dir):
+        raise ValueError('toolchain directory not found: ' + toolchain_dir)
+
+    missing_programs = [
+        program for program in TOOLCHAIN_PROGRAMS
+        if shutil.which(program, path=toolchain_dir) is None
+    ]
+    if missing_programs:
+        raise ValueError(
+            'toolchain directory is missing required programs: '
+            + ', '.join(missing_programs)
+        )
+    return toolchain_dir
+
+
+def resolve_toolchain_dir(explicit_dir=''):
+    if explicit_dir:
+        toolchain_dir = validate_toolchain_dir(explicit_dir)
+        print('arm-none-eabi toolchain selected explicitly:', toolchain_dir)
+        return toolchain_dir
+
     st_root = os.path.join("C:/",'ST')
     if os.name == 'posix': # install paths are os dependent
         st_root = os.path.join("/opt",'st')
@@ -96,18 +135,80 @@ if __name__ == "__main__":
 
     if ST_DIR != '' and GNU_DIR != '' and os.path.exists(os.path.join(ST_DIR,GNU_DIR)):
         # STM32CubeIDE toolchain, gnu-tools live in a tools/bin subpath of the plugin
-        GCC_DIR = os.path.join(ST_DIR,GNU_DIR,'tools','bin')
+        toolchain_dir = os.path.join(ST_DIR,GNU_DIR,'tools','bin')
         print('STM32CubeIDE found in:', ST_DIR)
         print('gnu-tools found in:', GNU_DIR)
     else:
         # no STM32CubeIDE toolchain found, fall back to a standalone arm-none-eabi toolchain on PATH
         gcc_path = shutil.which('arm-none-eabi-gcc')
         if not gcc_path:
-            print('ERROR: gnu-tools not found! (neither STM32CubeIDE nor arm-none-eabi-gcc on PATH)')
-            exit(1)
-        GCC_DIR = os.path.dirname(gcc_path) # arm-none-eabi-gcc is directly in this dir
-        print('arm-none-eabi toolchain found in:', GCC_DIR)
+            raise ValueError(
+                'gnu-tools not found! '
+                '(neither STM32CubeIDE nor arm-none-eabi-gcc on PATH)'
+            )
+        toolchain_dir = os.path.dirname(gcc_path) # arm-none-eabi-gcc is directly in this dir
+        print('arm-none-eabi toolchain found in:', toolchain_dir)
+    return validate_toolchain_dir(toolchain_dir)
+
+
+def report_toolchain_version(toolchain_dir):
+    gcc_path = shutil.which('arm-none-eabi-gcc', path=toolchain_dir)
+    version_result = subprocess.run(
+        [gcc_path, '-dumpfullversion', '-dumpversion'],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if version_result.returncode != 0:
+        raise RuntimeError(
+            'failed to query arm-none-eabi-gcc numeric version '
+            f'(exit code {version_result.returncode})'
+        )
+    numeric_version = version_result.stdout.strip()
+    version_match = re.fullmatch(r'(\d+)(?:\.\d+)*', numeric_version)
+    if not version_match:
+        raise RuntimeError(
+            'arm-none-eabi-gcc returned an invalid numeric version: '
+            + repr(numeric_version)
+        )
+    gcc_major = int(version_match.group(1))
+    if gcc_major > MAX_CODE_VALIDATED_GCC_MAJOR:
+        raise ValueError(
+            f'GCC {numeric_version} is newer than the code-validated '
+            f'maximum GCC {MAX_CODE_VALIDATED_GCC_MAJOR}'
+        )
+
+    banner_result = subprocess.run(
+        [gcc_path, '--version'],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if banner_result.returncode != 0:
+        raise RuntimeError(
+            'failed to query arm-none-eabi-gcc version '
+            f'(exit code {banner_result.returncode})'
+        )
+    version_line = next(
+        (line.strip() for line in banner_result.stdout.splitlines() if line.strip()),
+        '',
+    )
+    if not version_line:
+        raise RuntimeError('arm-none-eabi-gcc returned an empty version report')
+    print('arm-none-eabi-gcc version:', version_line)
+    print(
+        'code-validated GCC upper bound:',
+        MAX_CODE_VALIDATED_GCC_MAJOR,
+    )
     print('------------------------------------------------------------')
+    return version_line
+
+
+def toolchain_program(program):
+    program_path = os.path.join(GCC_DIR, program)
+    if os.name == 'nt':
+        return subprocess.list2cmdline([program_path])
+    return shlex.quote(program_path)
 
 
 #-- mLRS directories
@@ -202,6 +303,19 @@ def printWarning(txt):
 
 def printError(txt):
     print('\033[91m'+txt+'\033[0m') # light Red
+
+
+def run_checked(cmd, stage):
+    return_code = subprocess.call(cmd, shell=True)
+    if return_code != 0:
+        raise RuntimeError(stage+' failed with exit code '+str(return_code)+': '+cmd)
+
+
+def require_nonempty_file(path, stage):
+    if not os.path.isfile(path):
+        raise RuntimeError(stage+' did not create artifact: '+path)
+    if os.path.getsize(path) <= 0:
+        raise RuntimeError(stage+' created empty artifact: '+path)
 
 
 #--------------------------------------------------
@@ -583,9 +697,9 @@ def mlrs_compile_file(target, file):
     # construct command line
     cmd = ''
     if is_cpp:
-        cmd = os.path.join(GCC_DIR,'arm-none-eabi-g++ ')
+        cmd = toolchain_program('arm-none-eabi-g++') + ' '
     else:
-        cmd = os.path.join(GCC_DIR,'arm-none-eabi-gcc ')
+        cmd = toolchain_program('arm-none-eabi-gcc') + ' '
 
     if not is_asm:
         cmd += '"'+os.path.join(MLRS_DIR,file)+'" '
@@ -621,10 +735,11 @@ def mlrs_compile_file(target, file):
         cmd += '-x assembler-with-cpp '
 
     cmd += '-MMD -MP '
+    object_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.o'
     cmd += '-MF"'+os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.d" '
-    cmd += '-MT"'+os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.o" '
+    cmd += '-MT"'+object_path+'" '
 
-    cmd += '-o "'+os.path.join(MLRS_BUILD_DIR,target.build_dir,file_name)+'.o" '
+    cmd += '-o "'+object_path+'" '
 
     if is_asm:
         cmd += '"'+os.path.join(MLRS_DIR,file)+'" ' # asm needs it at end
@@ -638,7 +753,8 @@ def mlrs_compile_file(target, file):
 
     # execute
     #print('run')
-    subprocess.call(cmd, shell=True) # subprocess, not os.system, so parallel compiles aren't serialized
+    run_checked(cmd, 'compile '+file)
+    require_nonempty_file(object_path, 'compile '+file)
 
 
 def mlrs_link_target(target):
@@ -691,8 +807,9 @@ def mlrs_link_target(target):
 
     # generate command line
     cmd = ''
-    cmd += os.path.join(GCC_DIR,'arm-none-eabi-g++') + ' '
-    cmd += '-o "'+os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf')+'" '
+    cmd += toolchain_program('arm-none-eabi-g++') + ' '
+    elf_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf')
+    cmd += '-o "'+elf_path+'" '
     cmd += '@"'+os.path.join(MLRS_BUILD_DIR,target.build_dir,'objects.list')+'" '
     cmd += '-T"'+os.path.join(MLRS_DIR,target.target,target.linker_script)+'" '
     for mcu_option in target.mcu_option_list:
@@ -708,7 +825,9 @@ def mlrs_link_target(target):
     #print(cmd)
 
     #print('run')
-    os.system(cmd)
+    run_checked(cmd, 'link '+target.target)
+    require_nonempty_file(elf_path, 'link '+target.target)
+    return elf_path
 
 
 def mlrs_build_target(target, cmdline_D_list):
@@ -761,25 +880,28 @@ def mlrs_build_target(target, cmdline_D_list):
     for file in files:
         create_dir(os.path.join(MLRS_BUILD_DIR,target.build_dir,os.path.dirname(file)))
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        pool.map(lambda file: mlrs_compile_file(target, file), files)
+        list(pool.map(lambda file: mlrs_compile_file(target, file), files))
 
     print('linking')
 
-    mlrs_link_target(target)
-    os.system(os.path.join(GCC_DIR,'arm-none-eabi-size')+' '+os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf'))
+    elf_path = mlrs_link_target(target)
+    run_checked(toolchain_program('arm-none-eabi-size')+' '+elf_path, 'size '+target.target)
 
     if 'MLRS_FEATURE_ELRS_BOOTLOADER' in target.extra_D_list:
-        os.system(
-            os.path.join(GCC_DIR,'arm-none-eabi-objcopy') + ' -O binary ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf') + ' ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elrs')
+        artifact_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elrs')
+        run_checked(
+            toolchain_program('arm-none-eabi-objcopy') + ' -O binary ' +
+            elf_path + ' ' + artifact_path,
+            'objcopy '+target.target
         )
     else:
-        os.system(
-            os.path.join(GCC_DIR,'arm-none-eabi-objcopy') + ' -O ihex ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf') + ' ' +
-            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.hex')
+        artifact_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.hex')
+        run_checked(
+            toolchain_program('arm-none-eabi-objcopy') + ' -O ihex ' +
+            elf_path + ' ' + artifact_path,
+            'objcopy '+target.target
         )
+    require_nonempty_file(artifact_path, 'objcopy '+target.target)
 
     print('------------------------------------------------------------')
 
@@ -1231,51 +1353,93 @@ def mlrs_copy_all_hex_etc():
 
 
 #-- here we go
-if __name__ == "__main__":
+def parse_arguments(argv=None):
+    parser = argparse.ArgumentParser(
+        description='Build mLRS STM32 firmware targets.',
+    )
+    parser.add_argument(
+        '--target', '-t', '-T',
+        default='',
+        help='build targets containing this text; prefix with ! to exclude',
+    )
+    parser.add_argument(
+        '--define', '-d', '-D',
+        action='append',
+        default=[],
+        help='append a compiler preprocessor definition (repeatable)',
+    )
+    parser.add_argument(
+        '--nopause', '-np',
+        action='store_true',
+        help='do not wait for a key press after the build',
+    )
+    parser.add_argument(
+        '--version', '-v', '-V',
+        default='',
+        help='override the firmware version string',
+    )
+    parser.add_argument(
+        '--toolchain-dir', '--toolchain',
+        default='',
+        metavar='DIR',
+        help='directory containing the arm-none-eabi toolchain programs',
+    )
+    return parser.parse_args(argv)
 
-    cmdline_target = ''
-    cmdline_D_list = []
-    cmdline_nopause = False
-    cmdline_version = ''
 
-    cmd_pos = -1
-    for cmd in sys.argv:
-        cmd_pos += 1
-        if cmd == '--target' or cmd == '-t' or cmd == '-T':
-            if sys.argv[cmd_pos+1] != '':
-                cmdline_target = sys.argv[cmd_pos+1]
-        if cmd == '--define' or cmd == '-d' or cmd == '-D':
-            if sys.argv[cmd_pos+1] != '':
-                cmdline_D_list.append(sys.argv[cmd_pos+1])
-        if cmd == '--nopause' or cmd == '-np':
-                cmdline_nopause = True
-        if cmd == '--version' or cmd == '-v' or cmd == '-V':
-            if sys.argv[cmd_pos+1] != '':
-                cmdline_version = sys.argv[cmd_pos+1]
+def target_matches_filter(target_name, target_filter):
+    if target_filter == '':
+        return True
+    if target_filter.startswith('!'):
+        return target_filter[1:] not in target_name
+    return target_filter in target_name
+
+
+def main(argv=None):
+    global GCC_DIR
+    global VERSIONONLYSTR
+
+    args = parse_arguments(argv)
 
     #cmdline_target = 'tx-diy-e22dual-module02-g491re'
     #cmdline_target = 'tx-diy-sxdualXXX'
 
-    if cmdline_version == '':
+    if args.version == '':
         mlrs_set_version()
         mlrs_set_branch_hash(VERSIONONLYSTR)
     else:
-        VERSIONONLYSTR = cmdline_version
+        VERSIONONLYSTR = args.version
+
+    targetlist = mlrs_create_targetlist('-'+VERSIONONLYSTR+BRANCHSTR+HASHSTR, [])
+    matching_targets = [
+        target for target in targetlist
+        if target_matches_filter(target.target, args.target)
+    ]
+    if not matching_targets:
+        print(
+            f'ERROR: no firmware targets matched --target {args.target!r}',
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        GCC_DIR = resolve_toolchain_dir(args.toolchain_dir)
+        report_toolchain_version(GCC_DIR)
+    except (ValueError, RuntimeError) as error:
+        print('ERROR:', error, file=sys.stderr)
+        return 1
 
     create_clean_dir(MLRS_BUILD_DIR)
 
-    targetlist = mlrs_create_targetlist('-'+VERSIONONLYSTR+BRANCHSTR+HASHSTR, [])
+    for target in matching_targets:
+        mlrs_build_target(target, args.define)
 
-    target_cnt = 0
-    for target in targetlist:
-        if ((cmdline_target == '') or
-            (cmdline_target[0] != '!' and cmdline_target in target.target) or
-            (cmdline_target[0] == '!' and not cmdline_target[1:] in target.target)):
-            mlrs_build_target(target, cmdline_D_list)
-            target_cnt +=1
+    mlrs_copy_all_hex_etc()
 
-    if cmdline_target == '' or target_cnt > 0:
-        mlrs_copy_all_hex_etc()
-
-    if not cmdline_nopause:
+    if not args.nopause:
         os.system("pause")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

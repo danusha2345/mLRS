@@ -24,8 +24,9 @@ theory of operation
   seq_no numbers the serial data payload
   this allows the recipient to identify which payload it got, and decide if it is a
   fresh payload or an old
-- response frame has an ack field of 1 bit
-  ack holds the seq_no of the last received payload
+- response frame carries a 3-bit ack plus a discontinuity echo bit
+  ack holds the complete seq_no of the last received payload
+  the echo bit confirms that a forced-advance/resync payload was received
   this allows the sender to determine if the current payload has been successfully
   delivered
 
@@ -49,17 +50,20 @@ class tTransmitArq
 
     void Disconnected(void);
     void FrameMissed(void);
-    void AckReceived(uint8_t ack_seq_no);
+    void AckReceived(uint8_t ack_seq_no, bool ack_discontinuity);
 
     bool GetFreshPayload(void);
     uint8_t SeqNo(void);
+    bool PayloadDiscontinuity(void);
     void SetRetryCnt(uint8_t retry_cnt);
 
     void SetRetryCntAuto(int32_t _frame_cnt, uint8_t mode);
 
     uint8_t status;
-    uint8_t received_ack_seq_no;  // attention: is 0/1 only, 0 = even, 1 = odd
+    uint8_t received_ack_seq_no;  // 3 bit, 0..7
+    bool received_ack_discontinuity;
     uint8_t payload_seq_no;       // the seq_no associated to this payload
+    bool payload_discontinuity;   // forced advance marker, must be echoed in ACK
     uint8_t payload_retry_cnt;    // maximum number of allowed retries for this payload, 0 = off, 255 = infinite
     uint8_t payload_retries;      // number of retries for this payload
 
@@ -71,7 +75,9 @@ void tTransmitArq::Init(void)
 {
     status = ARQ_TX_IDLE;
     received_ack_seq_no = 0;
+    received_ack_discontinuity = false;
     payload_seq_no = 0;
+    payload_discontinuity = false;
     payload_retry_cnt = UINT8_MAX; // 0 = off, 255 = infinite
     payload_retries = 0;
 }
@@ -79,7 +85,8 @@ void tTransmitArq::Init(void)
 
 // methods called upon receive or expected receive (in doPostReceive)
 // the calling sequence is:
-// 1. Received(seq_no) or FrameMissed() (in handle_receive() or handle_receive_none())
+// 1. AckReceived(ack_seq_no, ack_discontinuity) or FrameMissed()
+//    (in handle_receive() or handle_receive_none())
 // 2. Disconnected()
 
 void tTransmitArq::Disconnected(void)
@@ -94,9 +101,10 @@ void tTransmitArq::FrameMissed(void)
 }
 
 
-void tTransmitArq::AckReceived(uint8_t ack_seq_no)
+void tTransmitArq::AckReceived(uint8_t ack_seq_no, bool ack_discontinuity)
 {
-    received_ack_seq_no = ack_seq_no; // is 0/1
+    received_ack_seq_no = ack_seq_no & 0x07;
+    received_ack_discontinuity = ack_discontinuity;
     status = ARQ_TX_RECEIVED;
 }
 
@@ -109,7 +117,8 @@ void tTransmitArq::AckReceived(uint8_t ack_seq_no)
 bool tTransmitArq::GetFreshPayload(void)
 {
     if (payload_retry_cnt == 0) { // ARQ disabled, new payload each time
-        payload_seq_no++;
+        payload_seq_no = (payload_seq_no + 1) & 0x07;
+        payload_discontinuity = false;
         payload_retries = 0;
         return true;
     }
@@ -118,21 +127,23 @@ bool tTransmitArq::GetFreshPayload(void)
     case ARQ_TX_IDLE:
         // we have no history info
         // so send new payload
-        payload_seq_no++;
+        payload_seq_no = (payload_seq_no + 1) & 0x07;
+        payload_discontinuity = false;
         payload_retries = 0;
         return true;
 
     case ARQ_TX_RECEIVED:
         // frame received, hence we got ack/nack
-        // if received_ack_seq_no == payload_seq_no
+        // if ACK token matches payload token
         //   => the recipient has acked the reception => send new payload
         // else
         //   => the recipient wants the previous payload again => no new payload
-        // attention: received_ack_seq_no is 1 bit!
-        // next = (received_ack_seq_no & 0x01) == (payload_seq_no & 0x01)
-        if ((received_ack_seq_no & 0x01) != (payload_seq_no & 0x01)) {
+        if ((received_ack_seq_no != payload_seq_no) ||
+            (received_ack_discontinuity != payload_discontinuity)) {
             // nack, recipient wants the previous payload again
-            if (payload_retry_cnt == UINT8_MAX) { // ARQ with infinite retries, so never next
+            if (payload_discontinuity || payload_retry_cnt == UINT8_MAX) {
+                // A forced-advance payload is the resync handshake. Never replace it
+                // until the receiver echoes both its seq_no and discontinuity marker.
                 payload_retries = 0;
                 return false;
             } else { // ARQ with finite retries
@@ -141,9 +152,16 @@ bool tTransmitArq::GetFreshPayload(void)
                     return false;
                 }
             }
+            // retry budget exhausted: drop the old payload and start a marked
+            // resync payload. The receiver will reset stream parsers before use.
+            payload_seq_no = (payload_seq_no + 1) & 0x07;
+            payload_discontinuity = true;
+            payload_retries = 0;
+            return true;
         }
-        // recipient acked the previous payload or too many retries, shall send new payload
-        payload_seq_no++; // give this payload the next seq_no
+        // recipient acked the previous payload, shall send new payload
+        payload_seq_no = (payload_seq_no + 1) & 0x07;
+        payload_discontinuity = false;
         payload_retries = 0;
         return true;
 
@@ -151,13 +169,14 @@ bool tTransmitArq::GetFreshPayload(void)
         // no frame or invalid frame received, hence no ack/nack received
         // needs thus to be treated as nack
         // => no new payload, unless too many retries
-        if (payload_retry_cnt == UINT8_MAX) { // ARQ with infinite retries, so never next
+        if (payload_discontinuity || payload_retry_cnt == UINT8_MAX) {
             payload_retries = 0;
             return false;
         } else { // ARQ with finite retries
             payload_retries++;
             if (payload_retries > payload_retry_cnt) { // too many retries, send new payload
-                payload_seq_no++;
+                payload_seq_no = (payload_seq_no + 1) & 0x07;
+                payload_discontinuity = true;
                 payload_retries = 0;
                 return true;
             }
@@ -171,7 +190,13 @@ bool tTransmitArq::GetFreshPayload(void)
 
 uint8_t tTransmitArq::SeqNo(void)
 {
-    return payload_seq_no; // will be converted to 3 bit or 0...7
+    return payload_seq_no;
+}
+
+
+bool tTransmitArq::PayloadDiscontinuity(void)
+{
+    return payload_discontinuity;
 }
 
 
@@ -200,16 +225,17 @@ void tTransmitArq::SetRetryCntAuto(int32_t _frame_cnt, uint8_t mode)
         } else {
             SetRetryCnt(1);
         }
-        break;
+        return;
     case MODE_FSK_50HZ: // 2 -> 1
     case MODE_50HZ:
     case MODE_31HZ:
     case MODE_19HZ:
     case MODE_19HZ_7X:
         SetRetryCnt((_frame_cnt >= 800) ? 2 : 1);
+        return;
     }
 
-    SetRetryCnt(1); // should never be called
+    SetRetryCnt(1);
 }
 
 
@@ -244,17 +270,21 @@ class tReceiveArq
 
     void Disconnected(void);
     void FrameMissed(void);
-    void Received(uint8_t seq_no);
+    void Received(uint8_t seq_no, bool discontinuity);
 
     bool AcceptPayload(void);
     bool FrameLost(void);
 
     uint8_t AckSeqNo(void);
+    bool AckDiscontinuity(void);
 
     uint8_t status;
     uint8_t received_seq_no_last;   // all seq_no here are 3 bit,  0..7
     uint8_t received_seq_no;
+    bool received_discontinuity_last;
+    bool received_discontinuity;
     uint8_t ack_seq_no;
+    bool ack_discontinuity;
     bool accept_received_payload;   // maybe a state?
     bool frame_lost;                // maybe a state?
 
@@ -269,15 +299,19 @@ void tReceiveArq::Init(void)
     status = ARQ_RX_IDLE;
     received_seq_no = 0;
     received_seq_no_last = 0;
+    received_discontinuity = false;
+    received_discontinuity_last = false;
     accept_received_payload = false;
     frame_lost = false;
     ack_seq_no = 0;
+    ack_discontinuity = false;
 }
 
 
 // methods called upon receive or expected receive (in doPreTransmit)
 // the calling sequence is:
-// 1. Received(seq_no) or FrameMissed() (in handle_receive() or handle_receive_none())
+// 1. Received(seq_no, discontinuity) or FrameMissed()
+//    (in handle_receive() or handle_receive_none())
 // 2. AcceptPayload() (in process_received_frame())
 // 3. FrameLost()
 // 4. Disconnected()
@@ -300,21 +334,29 @@ void tReceiveArq::spin(void)
         accept_received_payload = true;
         frame_lost = true;
         received_seq_no_last = received_seq_no;
+        received_discontinuity_last = received_discontinuity;
         ack_seq_no = received_seq_no;
+        ack_discontinuity = received_discontinuity;
         break;
 
     case ARQ_RX_RECEIVED:
         // we got a frame with valid payload
-        // if payload's seq_no is different from the last => we got a new payload
-        accept_received_payload = (received_seq_no != received_seq_no_last); // new seq no received, so accept it
+        // seq_no plus discontinuity marker form the payload token. A marked
+        // payload is fresh even after a complete modulo-8 sequence wrap.
+        accept_received_payload =
+            (received_seq_no != received_seq_no_last) ||
+            (received_discontinuity != received_discontinuity_last);
 
-        // the received seq_no is 3 bits
-        // we can check if we lost a frame if the received seq no is larger than just +1
-        // this fails if it had been 8-1 = 7 missed frames
-        if (((received_seq_no - received_seq_no_last) & 0x07) > 1) frame_lost = true;
+        if (accept_received_payload &&
+            (received_discontinuity ||
+             (((received_seq_no - received_seq_no_last) & 0x07) > 1))) {
+            frame_lost = true;
+        }
 
         received_seq_no_last = received_seq_no;
+        received_discontinuity_last = received_discontinuity;
         ack_seq_no = received_seq_no;
+        ack_discontinuity = received_discontinuity;
         break;
 
     case ARQ_RX_FRAME_MISSED:
@@ -335,9 +377,10 @@ void tReceiveArq::FrameMissed(void)
 }
 
 
-void tReceiveArq::Received(uint8_t seq_no)
+void tReceiveArq::Received(uint8_t seq_no, bool discontinuity)
 {
-    received_seq_no = seq_no;
+    received_seq_no = seq_no & 0x07;
+    received_discontinuity = discontinuity;
     status = (status == ARQ_RX_IDLE) ? ARQ_RX_RECEIVED_WAS_IDLE : ARQ_RX_RECEIVED;
     spin();
 }
@@ -361,7 +404,13 @@ bool tReceiveArq::FrameLost(void)
 
 uint8_t tReceiveArq::AckSeqNo(void)
 {
-    return ack_seq_no; // will be converted by 1 bit to 0/1
+    return ack_seq_no;
+}
+
+
+bool tReceiveArq::AckDiscontinuity(void)
+{
+    return ack_discontinuity;
 }
 
 
@@ -388,12 +437,13 @@ class tTransmitArq
 
     void Disconnected(void) {}
     void FrameMissed(void) {}
-    void AckReceived(uint8_t ack_seq_no) {}
+    void AckReceived(uint8_t, bool) {}
 
     bool GetFreshPayload(void) { return true; }
-    uint8_t SeqNo(void) { seq_no++; return seq_no; }
-    void SetRetryCnt(uint8_t retry_cnt) {}
-    void SetRetryCntAuto(int32_t _frame_cnt, uint8_t mode) {}
+    uint8_t SeqNo(void) { seq_no = (seq_no + 1) & 0x07; return seq_no; }
+    bool PayloadDiscontinuity(void) { return false; }
+    void SetRetryCnt(uint8_t) {}
+    void SetRetryCntAuto(int32_t, uint8_t) {}
 
     uint8_t seq_no;
 };
@@ -406,11 +456,12 @@ class tReceiveArq
 
     void Disconnected(void) {}
     void FrameMissed(void) {}
-    void Received(uint8_t _seq_no) {}
+    void Received(uint8_t, bool) {}
     bool AcceptPayload(void) { return true; }
     bool FrameLost(void) { return false; }
 
     uint8_t AckSeqNo(void) { return 1; }
+    bool AckDiscontinuity(void) { return false; }
 };
 
 #undef USE_ARQ_DBG

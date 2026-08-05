@@ -52,8 +52,8 @@ uint16_t crc;
     // generate header
     frame->sync_word = Config.FrameSyncWord;
     frame->status.seq_no = frame_stats->seq_no;
-    frame->status.ack = frame_stats->ack;
-    frame->status.frame_type = type; // FRAME_TYPE_TX, FRAME_TYPE_TX_RX_CMD
+    txframe_status_set_ack(&frame->status, frame_stats->ack);
+    frame->status.frame_type = frame_type_with_discontinuity(type, frame_stats->arq_discontinuity);
     frame->status.antenna = frame_stats->antenna;
     frame->status.transmit_antenna = frame_stats->transmit_antenna;
     frame->status.rssi_u7 = rssi_u7_from_i8(frame_stats->rssi);
@@ -117,7 +117,9 @@ uint16_t crc;
 
     if (frame->sync_word != Config.FrameSyncWord) return CHECK_ERROR_SYNCWORD;
 
-    if ((frame->status.frame_type != FRAME_TYPE_TX) && (frame->status.frame_type != FRAME_TYPE_TX_RX_CMD)) {
+    if (!frame_type_is_arq_v2(frame->status.frame_type)) return CHECK_ERROR_HEADER;
+    uint8_t frame_type = frame_type_value(frame->status.frame_type);
+    if ((frame_type != FRAME_TYPE_TX) && (frame_type != FRAME_TYPE_TX_RX_CMD)) {
         return CHECK_ERROR_HEADER;
     }
 
@@ -180,7 +182,7 @@ uint16_t crc;
 
     frame->sync_word = Config.FrameSyncWord;
     // keep !! frame->status.seq_no = frame_stats->seq_no;
-    frame->status.ack = frame_stats->ack;
+    rxframe_status_set_ack(&frame->status, frame_stats->ack);
     // keep !! frame->status.frame_type = type; // FRAME_TYPE_RX, FRAME_TYPE_TX_RX_CMD
     frame->status.antenna = frame_stats->antenna;
     frame->status.transmit_antenna = frame_stats->transmit_antenna;
@@ -210,8 +212,8 @@ uint16_t crc;
 
     frame->sync_word = Config.FrameSyncWord;
     frame->status.seq_no = frame_stats->seq_no;
-    frame->status.ack = frame_stats->ack;
-    frame->status.frame_type = type; // FRAME_TYPE_RX, FRAME_TYPE_TX_RX_CMD
+    rxframe_status_set_ack(&frame->status, frame_stats->ack);
+    frame->status.frame_type = frame_type_with_discontinuity(type, frame_stats->arq_discontinuity);
     frame->status.antenna = frame_stats->antenna;
     frame->status.transmit_antenna = frame_stats->transmit_antenna;
     frame->status.rssi_u7 = rssi_u7_from_i8(frame_stats->rssi);
@@ -246,7 +248,9 @@ uint16_t crc;
 
     if (frame->sync_word != Config.FrameSyncWord) return CHECK_ERROR_SYNCWORD;
 
-    if ((frame->status.frame_type != FRAME_TYPE_RX) && (frame->status.frame_type != FRAME_TYPE_TX_RX_CMD)) {
+    if (!frame_type_is_arq_v2(frame->status.frame_type)) return CHECK_ERROR_HEADER;
+    uint8_t frame_type = frame_type_value(frame->status.frame_type);
+    if ((frame_type != FRAME_TYPE_RX) && (frame_type != FRAME_TYPE_TX_RX_CMD)) {
         return CHECK_ERROR_HEADER;
     }
 
