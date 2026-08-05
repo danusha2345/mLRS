@@ -62,7 +62,7 @@
 | MLRS-019 | P2 | LIMITATION | Diversity | Single-SPI antenna2-only скрыта, underlying capability не решена | issue #200 |
 | MLRS-020 | P2 | IN_PROGRESS | Tests | Host regression runner включён в CI; ESP build и external hardware coverage ещё открыты | новый |
 | MLRS-021 | P2 | IMPLEMENTED | Toolchain | GCC 11.3/14.3 проходят 55/55; broad guard заменён code-validated верхней границей 14 | issue #159 |
-| MLRS-022 | P2 | CONFIRMED | ESP build | Script жёстко привязан к Windows и допускает false success/stale artifacts | новый |
+| MLRS-022 | P2 | IMPLEMENTED | ESP build | Portable fail-fast runner проверяет полный набор текущих artifacts | новый |
 
 ## Подробные карточки
 
@@ -928,7 +928,7 @@ dual-toolchain build gate, полный local 55/55 result, size comparison,
 ### MLRS-022 — ESP build script допускает false success
 
 **Приоритет:** P2
-**Статус:** CONFIRMED
+**Статус:** IMPLEMENTED
 
 [`run_make_esp_firmwares.py`](../tools/run_make_esp_firmwares.py) жёстко задаёт
 `C:/Users/Olli/.platformio/penv/Scripts`, не обрабатывает `--help` и неизвестные
@@ -952,6 +952,32 @@ Definition of done: Linux/Windows runner либо создаёт полный н
 artifacts, либо завершается non-zero до copy stage; stale `.bin` не может быть
 принят за успешную сборку.
 
+Реализовано:
+
+- CLI переведён на строгий `argparse`: `--help` не запускает build, invalid
+  options получают code 2, aliases `-t`/`-T`, `-d`/`-D`, `-np`, `-v`/`-V`
+  сохранены;
+- `pio`/`platformio` ищется через `PATH`, а `--platformio PATH` принимает
+  executable или содержащий его каталог;
+- `--target` выбирает только точное environment из `platformio.ini`, а
+  repeatable `--define` реально добавляется через `PLATFORMIO_BUILD_FLAGS`;
+- clean и build выполняются через `subprocess.run()` с обязательным zero exit
+  code; каталоги ожидаемых environments удаляются между clean и build, поэтому
+  no-op clean не может сохранить stale `firmware.bin`;
+- до публикации проверяется наличие и ненулевой размер каждого ожидаемого
+  artifact; копирование сначала формирует staging set и только затем заменяет
+  `tools/esp-build/firmware`;
+- detached checkout больше не создаёт пустой branch suffix и двойной дефис в
+  имени; dev version по-прежнему получает текущий Git hash;
+- 10 host regressions покрывают CLI, aliases/defines, missing tool, unknown
+  target, build failure, no-op/stale tree, incomplete artifact set и detached
+  checkout;
+- Linux end-to-end runner успешно пересобрал все 32/32 environments и только
+  после общей проверки опубликовал ровно 32 непустых binaries.
+
+Осталось до `FIXED`: тот же runner должен пройти на Windows. До этого
+platform-specific acceptance сохраняется как `IMPLEMENTED`, а не `FIXED`.
+
 ## Исправленные или недоказанные первоначальные выводы
 
 - `SERIAL.write(buf,len)` на ESP32 core 3.3.10 не делает silent partial write:
@@ -971,8 +997,7 @@ artifacts, либо завершается non-zero до copy stage; stale `.bin
 
 Текущий рабочий scope — только код и автоматические проверки:
 
-1. MLRS-015/018/020/022: сделать portable fail-fast ESP build, затем завершить
-   CI coverage для ESP/bridge и Windows setup.
+1. MLRS-015/018/020: завершить CI coverage для ESP/bridge и Windows setup.
 2. MLRS-019: запретить antenna2-only на всех code/API boundaries либо явно
    документировать limitation.
 

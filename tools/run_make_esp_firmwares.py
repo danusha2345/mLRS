@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 *******************************************************
  Copyright (c) MLRS project
@@ -7,183 +7,270 @@
  OlliW @ www.olliw.eu
 *******************************************************
  run_make_esp_firmwares.py
- generate esp fimrware files
- renames and copies files into tools/esp-build/firmware
- version 21.03.2026
+ build ESP firmware files and publish verified binaries
 ********************************************************
 '''
+
+import argparse
+import configparser
 import os
-import pathlib
-import shutil
+from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 
 
-#-- installation dependent
-# TODO: effort at finding this automatically
-
-PIO_DIR = os.path.join("C:/",'Users','Olli','.platformio','penv','Scripts')
-
+MLRS_PROJECT_DIR = Path(__file__).resolve().parent.parent
+MLRS_PIO_BUILD_DIR = MLRS_PROJECT_DIR / '.pio' / 'build'
+MLRS_ESP_BUILD_DIR = MLRS_PROJECT_DIR / 'tools' / 'esp-build'
 
 
-#-- mLRS directories
-
-MLRS_PROJECT_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-
-MLRS_DIR = os.path.join(MLRS_PROJECT_DIR,'mLRS')
-
-MLRS_TOOLS_DIR = os.path.join(MLRS_PROJECT_DIR,'tools')
-MLRS_BUILD_DIR = os.path.join(MLRS_PROJECT_DIR,'tools','build3')
-
-MLRS_PIO_BUILD_DIR = os.path.join(MLRS_PROJECT_DIR,'.pio','build')
-MLRS_ESP_BUILD_DIR = os.path.join(MLRS_PROJECT_DIR,'tools','esp-build')
+class UsageError(ValueError):
+    pass
 
 
+def parse_arguments(argv=None):
+    parser = argparse.ArgumentParser(
+        description='Build ESP PlatformIO environments and publish verified binaries.',
+    )
+    parser.add_argument(
+        '--target', '-t', '-T',
+        help='build one exact PlatformIO environment (default: all environments)',
+    )
+    parser.add_argument(
+        '--define', '-d', '-D', action='append', default=[], metavar='NAME[=VALUE]',
+        help='append a preprocessor definition; may be repeated',
+    )
+    parser.add_argument(
+        '--platformio', metavar='PATH',
+        help='path to pio/platformio executable or its containing directory',
+    )
+    parser.add_argument(
+        '--version', '-v', '-V',
+        help='override firmware version used in published filenames',
+    )
+    parser.add_argument(
+        '--nopause', '-np', action='store_true',
+        help='do not wait for Enter after a Windows run',
+    )
+    return parser.parse_args(argv)
 
-#-- current version and branch
 
-VERSIONONLYSTR = ''
-BRANCHSTR = ''
-HASHSTR = ''
+def read_version(project_dir):
+    common_conf = project_dir / 'mLRS' / 'Common' / 'common_conf.h'
+    content = common_conf.read_text(encoding='utf-8')
+    match = re.search(r'VERSIONONLYSTR\s+"(\S+)"', content)
+    if not match:
+        raise RuntimeError('VERSIONONLYSTR not found in %s' % common_conf)
+    return match.group(1)
 
-def mlrs_set_version():
-    global VERSIONONLYSTR
-    F = open(os.path.join(MLRS_DIR,'Common','common_conf.h'), mode='r')
-    content = F.read()
-    F.close()
 
-    if VERSIONONLYSTR != '':
-        print('VERSIONONLYSTR =', VERSIONONLYSTR)
-        return
+def git_output(project_dir, *args, required=True):
+    result = subprocess.run(
+        ['git', *args], cwd=str(project_dir), capture_output=True, text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        if required:
+            raise RuntimeError(
+                'git %s failed with exit code %d' % (' '.join(args), result.returncode)
+            )
+        return ''
+    return result.stdout.strip()
 
-    v = re.search(r'VERSIONONLYSTR\s+"(\S+)"', content)
-    if v:
-        VERSIONONLYSTR = v.groups()[0]
-        print('VERSIONONLYSTR =', VERSIONONLYSTR)
+
+def version_suffix(project_dir, version):
+    try:
+        patch = int(version.split('.')[2])
+    except (IndexError, ValueError):
+        raise UsageError('version must contain a numeric patch component: %s' % version)
+
+    branch = git_output(project_dir, 'branch', '--show-current', required=False)
+    branch_suffix = ''
+    if branch and branch != 'main' and patch != 0:
+        safe_branch = re.sub(r'[^A-Za-z0-9._-]+', '-', branch).strip('-')
+        if safe_branch:
+            branch_suffix = '-' + safe_branch
+
+    hash_suffix = ''
+    if patch % 2 == 1:
+        commit_hash = git_output(project_dir, 'rev-parse', '--short', 'HEAD')
+        hash_suffix = '-@' + commit_hash
+
+    return branch_suffix + hash_suffix
+
+
+def platformio_environments(project_dir):
+    config_path = project_dir / 'platformio.ini'
+    parser = configparser.ConfigParser(interpolation=None)
+    with config_path.open(encoding='utf-8') as config_file:
+        parser.read_file(config_file)
+    environments = [
+        section[4:] for section in parser.sections() if section.startswith('env:')
+    ]
+    if not environments:
+        raise RuntimeError('no PlatformIO environments found in %s' % config_path)
+    return environments
+
+
+def resolve_platformio(explicit=None):
+    candidates = []
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if explicit_path.is_dir():
+            candidates.extend(
+                str(explicit_path / name)
+                for name in ('pio', 'platformio', 'pio.exe', 'platformio.exe')
+            )
+        else:
+            candidates.append(str(explicit_path))
     else:
-        print('----------------------------------------')
-        print('ERROR: VERSIONONLYSTR not found')
-        os.system('pause')
-        exit()
+        candidates.extend(('pio', 'platformio'))
+
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+
+    if explicit:
+        raise FileNotFoundError('PlatformIO executable not found at %s' % explicit)
+    raise FileNotFoundError(
+        'PlatformIO executable not found in PATH; use --platformio PATH'
+    )
 
 
-def mlrs_set_branch_hash(version_str):
-    global BRANCHSTR
-    global HASHSTR
-    import subprocess
-
-    v_patch = int(version_str.split('.')[2])
-
-    git_branch = subprocess.getoutput("git branch --show-current")
-    if not git_branch == 'main' and v_patch != 0: # is a branch, but not a main release
-        BRANCHSTR = '-'+git_branch
-    if BRANCHSTR != '':
-        print('BRANCHSTR =', BRANCHSTR)
-
-    git_hash = subprocess.getoutput("git rev-parse --short HEAD")
-    if v_patch % 2 == 1: # odd firmware patch version, so is dev, so add git hash
-        HASHSTR = '-@'+git_hash
-    if HASHSTR != '':
-        print('HASHSTR =', HASHSTR)
+def build_environment(defines):
+    environment = os.environ.copy()
+    extra_flags = '\n'.join('-D%s' % define for define in defines)
+    if extra_flags:
+        current_flags = environment.get('PLATFORMIO_BUILD_FLAGS', '')
+        environment['PLATFORMIO_BUILD_FLAGS'] = '\n'.join(
+            flags for flags in (current_flags, extra_flags) if flags
+        )
+    return environment
 
 
-#-- helper
-
-def remake_dir(path): # os dependent
-    if os.name == 'posix':
-        os.system('rm -r -f '+path)
-    else:
-        os.system('rmdir /s /q "'+path+'"')
-
-def make_dir(path): # os dependent
-    if os.name == 'posix':
-        os.system('mkdir -p '+path)
-    else:
-        os.system('md "'+path+'"')
-
-
-def create_dir(path):
-    if not os.path.exists(path):
-        make_dir(path)
-
-def erase_dir(path):
-    if os.path.exists(path):
-        remake_dir(path)
-
-def create_clean_dir(path):
-    if os.path.exists(path):
-        remake_dir(path)
-    make_dir(path)
+def run_checked(command, description, environment):
+    print(description, flush=True)
+    try:
+        result = subprocess.run(command, env=environment, check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            '%s failed with exit code %d' % (description, error.returncode)
+        )
+    # Keep the explicit check for test doubles and non-standard subprocess wrappers.
+    if result.returncode != 0:
+        raise RuntimeError(
+            '%s failed with exit code %d' % (description, result.returncode)
+        )
 
 
-def printWarning(txt):
-    print('\033[93m'+txt+'\033[0m') # light Yellow
+def remove_build_directories(build_dir, environments):
+    for environment in environments:
+        environment_dir = build_dir / environment
+        if environment_dir.is_symlink() or environment_dir.is_file():
+            environment_dir.unlink()
+        elif environment_dir.exists():
+            shutil.rmtree(environment_dir)
 
 
-def printError(txt):
-    print('\033[91m'+txt+'\033[0m') # light Red
+def compile_environments(platformio, project_dir, build_dir, environments, target, defines):
+    command = [platformio, 'run', '--project-dir', str(project_dir)]
+    if target:
+        command.extend(['--environment', target])
+
+    environment = build_environment(defines)
+    run_checked(command + ['--target', 'fullclean'], 'PlatformIO clean', environment)
+
+    # Do not let a broken/no-op clean command leave stale firmware.bin files that
+    # could be mistaken for products of the following build.
+    remove_build_directories(build_dir, environments)
+    run_checked(command, 'PlatformIO build', environment)
 
 
-
-#--------------------------------------------------
-# build system
-#--------------------------------------------------
-
-def mlrs_esp_compile_all():
-    pio_run = os.path.join(PIO_DIR,'platformio.exe') + ' run --project-dir ' + MLRS_PROJECT_DIR
-    
-    print('Full Clean All')
-    os.system(pio_run+' --target fullclean')
-    print('Build All')
-    os.system(pio_run)
+def validate_artifacts(build_dir, environments):
+    artifacts = []
+    for environment in environments:
+        artifact = build_dir / environment / 'firmware.bin'
+        if not artifact.is_file():
+            raise RuntimeError('expected artifact was not produced: %s' % artifact)
+        if artifact.stat().st_size <= 0:
+            raise RuntimeError('expected artifact is empty: %s' % artifact)
+        artifacts.append((environment, artifact))
+    return artifacts
 
 
-
-#--------------------------------------------------
-# application
-#--------------------------------------------------
-
-def mlrs_esp_copy_all_bin():
-    print('copying .bin files')
-    firmwarepath = os.path.join(MLRS_ESP_BUILD_DIR,'firmware')
-    create_clean_dir(firmwarepath)
-    for subdir in os.listdir(MLRS_PIO_BUILD_DIR):
-        if os.path.isdir(os.path.join(MLRS_PIO_BUILD_DIR,subdir)): # needs to use full path for the check to work
-            print(subdir)
-            file = os.path.join(MLRS_PIO_BUILD_DIR,subdir,'firmware.bin')
-            shutil.copy(file, os.path.join(firmwarepath,subdir+'-'+VERSIONONLYSTR+BRANCHSTR+HASHSTR+'.bin'))
+def remove_path(path):
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
-#-- here we go
-if __name__ == "__main__":
-    cmdline_target = ''
-    cmdline_D_list = []
-    cmdline_nopause = False
-    cmdline_version = ''
+def publish_artifacts(artifacts, output_dir, version, suffix):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix='.firmware.', dir=str(output_dir)))
+    destination = output_dir / 'firmware'
+    try:
+        for environment, artifact in artifacts:
+            filename = '%s-%s%s.bin' % (environment, version, suffix)
+            print('%s -> %s' % (environment, filename))
+            shutil.copy2(artifact, staging_dir / filename)
 
-    cmd_pos = -1
-    for cmd in sys.argv:
-        cmd_pos += 1
-        if cmd == '--target' or cmd == '-t' or cmd == '-T':
-            if sys.argv[cmd_pos+1] != '':
-                cmdline_target = sys.argv[cmd_pos+1]
-        if cmd == '--define' or cmd == '-d' or cmd == '-D':
-            if sys.argv[cmd_pos+1] != '':
-                cmdline_D_list.append(sys.argv[cmd_pos+1])
-        if cmd == '--nopause' or cmd == '-np':
-                cmdline_nopause = True
-        if cmd == '--version' or cmd == '-v' or cmd == '-V':
-            if sys.argv[cmd_pos+1] != '':
-                cmdline_version = sys.argv[cmd_pos+1]
+        remove_path(destination)
+        staging_dir.replace(destination)
+    except Exception:
+        remove_path(staging_dir)
+        raise
+    return destination
 
-    if cmdline_version == '':
-        mlrs_set_version()
-        mlrs_set_branch_hash(VERSIONONLYSTR)
-    else:
-        VERSIONONLYSTR = cmdline_version
 
-    mlrs_esp_compile_all()
-    mlrs_esp_copy_all_bin()
+def execute(args, project_dir=MLRS_PROJECT_DIR, build_dir=MLRS_PIO_BUILD_DIR,
+            output_dir=MLRS_ESP_BUILD_DIR):
+    project_dir = Path(project_dir)
+    build_dir = Path(build_dir)
+    output_dir = Path(output_dir)
 
-    if not cmdline_nopause:
-        os.system("pause")
+    all_environments = platformio_environments(project_dir)
+    if args.target and args.target not in all_environments:
+        raise UsageError('unknown PlatformIO environment: %s' % args.target)
+    environments = [args.target] if args.target else all_environments
+
+    platformio = resolve_platformio(args.platformio)
+    version = args.version or read_version(project_dir)
+    suffix = version_suffix(project_dir, version)
+
+    print('VERSIONONLYSTR =', version, flush=True)
+    if suffix:
+        print('filename suffix =', suffix, flush=True)
+    print('PlatformIO =', platformio, flush=True)
+    print('environments =', len(environments), flush=True)
+
+    compile_environments(
+        platformio, project_dir, build_dir, environments, args.target, args.define,
+    )
+    artifacts = validate_artifacts(build_dir, environments)
+    destination = publish_artifacts(artifacts, output_dir, version, suffix)
+    print('published %d verified binaries to %s' % (len(artifacts), destination))
+
+
+def main(argv=None):
+    args = parse_arguments(argv)
+    try:
+        execute(args)
+    except UsageError as error:
+        print('ERROR:', error, file=sys.stderr)
+        return 2
+    except (OSError, RuntimeError) as error:
+        print('ERROR:', error, file=sys.stderr)
+        return 1
+
+    if os.name == 'nt' and not args.nopause:
+        input('Press Enter to continue...')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -156,6 +156,25 @@ ESP targets can be built directly with PlatformIO, for example:
 pio run -e rx-generic-2400
 ```
 
+Для fail-fast сборки с проверкой и публикацией `firmware.bin` используйте
+portable runner. Он находит `pio`/`platformio` через `PATH`; нестандартный путь
+можно передать через `--platformio`:
+
+```bash
+python3 tools/run_make_esp_firmwares.py \
+  --target rx-generic-2400 \
+  --nopause
+
+python3 tools/run_make_esp_firmwares.py \
+  --platformio /path/to/pio \
+  --nopause
+```
+
+Без `--target` runner собирает все environments из `platformio.ini`. Проверенные
+непустые binaries публикуются в `tools/esp-build/firmware`; clean/build failure
+или отсутствие хотя бы одного ожидаемого artifact завершают команду non-zero до
+замены ранее опубликованного набора.
+
 The command-line setup above and the dual-toolchain build have been validated
 on Linux. Automated Windows setup remains pending. The upstream development
 guides describe the IDE workflows:
