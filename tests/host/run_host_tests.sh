@@ -14,4 +14,5 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 "${script_dir}/run_mavlinkx_tests.sh"
 "${script_dir}/run_parser_budget_tests.sh"
 "${script_dir}/run_serial_startup_tests.sh"
+"${script_dir}/run_tcp_backpressure_tests.sh"
 "${script_dir}/run_udp_drain_tests.sh"

@@ -49,7 +49,7 @@
 | MLRS-006 | P0 | IMPLEMENTED | UDP bridge | Datagram полностью вычитывается чанками во всех UDP handlers | новый |
 | MLRS-007 | P1 | IMPLEMENTED | RF recovery | Unexpected IRQ переводит state machine в безопасное состояние | issue #342 |
 | MLRS-008 | P1 | IMPLEMENTED | RF IRQ | Saturating pending counter передаёт IRQ из ISR атомарно | новый |
-| MLRS-009 | P1 | PARTIAL | TCP bridge | Blocking/partial `client.write()` переполняет UART RX | issue #478 |
+| MLRS-009 | P1 | IMPLEMENTED | TCP bridge | Bounded queues и partial writes ограничивают TCP starvation | issue #478 |
 | MLRS-010 | P1 | IMPLEMENTED | WLE5 timing | MAVLink/MSP loops ограничены 64 bytes за вызов | issue #283 |
 | MLRS-011 | P1 | IMPLEMENTED | FIFO/UART | FIFO и STM32 UART принимают frame целиком либо полностью отбрасывают | новый |
 | MLRS-012 | P1 | FIXED | ARQ | Adaptive retry thresholds больше не затираются значением 1 | новый |
@@ -395,7 +395,7 @@ targets. Счётчик предотвращает software race, но не об
 ### MLRS-009 — TCP backpressure и starvation
 
 **Приоритет:** P1  
-**Статус:** PARTIAL  
+**Статус:** IMPLEMENTED
 **GitHub:** [issue #478](https://github.com/olliw42/mLRS/issues/478)
 
 Результат `client.write()` игнорируется:
@@ -416,6 +416,30 @@ ESP32 implementation пытается дописать всё, но может �
 
 Definition of done: bidirectional soak с паузами чтения GCS 0.2/1/10 s не
 теряет sequence/hash и корректно восстанавливается после backpressure.
+
+Реализовано:
+
+- в обоих направлениях добавлены фиксированные очереди по 2 KiB и budget не
+  более 256 bytes на один этап обработки за проход loop;
+- входной источник не читается при заполненной очереди, а partial write
+  удаляет только фактически записанные bytes и продолжает с прежней позиции;
+- ESP32 пишет в socket через `send(..., MSG_DONTWAIT)`, ESP8266 проверяет
+  `availableForWrite()` и использует timeout 1 ms;
+- pending bytes старого соединения явно отбрасываются при disconnect/reconnect
+  и учитываются счётчиком, поэтому они не попадают следующему TCP client;
+- добавлены saturating counters requested/written, partial/stall/error/full,
+  write duration и high-water marks UART/очередей;
+- host test с ASan/UBSan проверяет budget, заполнение, partial writes, wrap и
+  saturation; source regression запрещает возврат unbounded
+  `while(client.available())`;
+- полный bridge собран для ESP32 Arduino Core 3.3.8 и ESP8266 Core 3.1.2;
+  обнаруженная ESP8266-зависимость от автогенерации прототипа устранена явным
+  объявлением `setup_wifipower()`.
+
+Осталось до `FIXED`: hardware bidirectional soak 0.2/1/10 s с sequence/hash и
+UART overflow telemetry. Фиксированная очередь ограничивает starvation и
+корректно передаёт backpressure, но не обещает бесконечно сохранять serial
+stream, если удалённый client не читает и у UART нет flow control.
 
 ### MLRS-010 — нет execution budget в MAVLink/MSP path
 
@@ -947,11 +971,9 @@ artifacts, либо завершается non-zero до copy stage; stale `.bin
 
 Текущий рабочий scope — только код и автоматические проверки:
 
-1. MLRS-009: bounded TCP queues/backpressure и model/host regressions без
-   заявления hardware A/B #478.
-2. MLRS-015/018/020/022: сделать portable fail-fast ESP build, затем завершить
+1. MLRS-015/018/020/022: сделать portable fail-fast ESP build, затем завершить
    CI coverage для ESP/bridge и Windows setup.
-3. MLRS-019: запретить antenna2-only на всех code/API boundaries либо явно
+2. MLRS-019: запретить antenna2-only на всех code/API boundaries либо явно
    документировать limitation.
 
 Hardware validation MLRS-002–008, MLRS-011/014 и runtime acceptance MLRS-021

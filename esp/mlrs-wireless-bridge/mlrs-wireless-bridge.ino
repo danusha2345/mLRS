@@ -266,6 +266,13 @@ String ble_device_name = ""; // name of your BLE device as it will be seen by yo
 #endif
 
 #include "serial-startup.h"
+#ifdef USE_WIRELESS_PROTOCOL_TCP
+  #include "tcp-backpressure.h"
+  #ifndef ESP8266
+    #include <errno.h>
+    #include <sys/socket.h>
+  #endif
+#endif
 
 
 //-------------------------------------------------------
@@ -389,6 +396,8 @@ struct espnow_peer_t {
 volatile espnow_peer_t espnow_peers[ESPNOW_MAX_PEERS];
 
 uint8_t espnow_broadcast_mac[6] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+
+void setup_wifipower(void);
 
 void espnow_rxbuf_push(const uint8_t* data, int len) {
     for (int i = 0; i < len; i++) {
@@ -813,8 +822,43 @@ tWifiHandler* wifi_handler;
 
 class tTCPHandler : public tWifiHandler {
   public:
+    tTcpBridgeQueue<TCP_BRIDGE_QUEUE_SIZE> serial_to_tcp_queue;
+    tTcpBridgeQueue<TCP_BRIDGE_QUEUE_SIZE> tcp_to_serial_queue;
+    uint32_t tcp_write_requested_bytes;
+    uint32_t tcp_write_written_bytes;
+    uint32_t serial_write_requested_bytes;
+    uint32_t serial_write_written_bytes;
+    uint32_t pending_dropped_bytes;
+    uint32_t tcp_write_partial_count;
+    uint32_t tcp_write_stall_count;
+    uint32_t tcp_write_error_count;
+    uint32_t serial_write_partial_count;
+    uint32_t serial_to_tcp_full_count;
+    uint32_t tcp_to_serial_full_count;
+    uint32_t tcp_write_max_duration_us;
+    uint16_t serial_rx_high_water;
+    uint16_t serial_to_tcp_high_water;
+    uint16_t tcp_to_serial_high_water;
+
     void Init(IPAddress __ip) {
         tWifiHandler::Init();
+        serial_to_tcp_queue.Reset();
+        tcp_to_serial_queue.Reset();
+        tcp_write_requested_bytes = 0;
+        tcp_write_written_bytes = 0;
+        serial_write_requested_bytes = 0;
+        serial_write_written_bytes = 0;
+        pending_dropped_bytes = 0;
+        tcp_write_partial_count = 0;
+        tcp_write_stall_count = 0;
+        tcp_write_error_count = 0;
+        serial_write_partial_count = 0;
+        serial_to_tcp_full_count = 0;
+        tcp_to_serial_full_count = 0;
+        tcp_write_max_duration_us = 0;
+        serial_rx_high_water = 0;
+        serial_to_tcp_high_water = 0;
+        tcp_to_serial_high_water = 0;
         device_name = (ssid != "") ? ssid : device_name + " AP TCP";
         set_device_password(password, "");
         _ip = __ip;
@@ -831,8 +875,13 @@ class tTCPHandler : public tWifiHandler {
     void Loop(uint8_t* buf, int sizeofbuf) override {
         if (server.hasClient()) {
             if (!client.connected()) {
+                drop_pending_queues();
                 client.stop(); // doesn't appear to make a difference
                 client = server.available();
+                client.setNoDelay(true);
+#ifdef ESP8266
+                client.setTimeout(1); // bound ClientContext::write() if lwIP queue state changes
+#endif
                 DBG_PRINTLN("connection");
             } else { // is already connected, so reject, doesn't seem to ever happen
                 server.available().stop();
@@ -841,23 +890,148 @@ class tTCPHandler : public tWifiHandler {
         }
 
         if (!client.connected()) { // nothing to do
+            drop_pending_queues();
             client.stop();
             serialFlushRx();
             is_connected = false;
             return;
         }
 
-        while (client.available()) {
-            int len = client.read(buf, sizeofbuf);
-            SERIAL.write(buf, len);
-            set_connected();
-        }
-
-        serial_read_wifi_write(buf, sizeofbuf);
+        tcp_read_to_queue(buf, sizeofbuf);
+        drain_tcp_to_serial();
+        serial_read_to_queue(buf, sizeofbuf);
+        drain_serial_to_tcp();
     }
 
-    void wifi_write(uint8_t* buf, int len) override {
-        client.write(buf, len);
+    void drop_pending_queues() {
+        tcp_bridge_saturating_add(
+            pending_dropped_bytes,
+            serial_to_tcp_queue.Available() + tcp_to_serial_queue.Available());
+        serial_to_tcp_queue.Reset();
+        tcp_to_serial_queue.Reset();
+    }
+
+    void update_queue_high_water() {
+        if (serial_to_tcp_queue.Available() > serial_to_tcp_high_water) {
+            serial_to_tcp_high_water = serial_to_tcp_queue.Available();
+        }
+        if (tcp_to_serial_queue.Available() > tcp_to_serial_high_water) {
+            tcp_to_serial_high_water = tcp_to_serial_queue.Available();
+        }
+    }
+
+    void tcp_read_to_queue(uint8_t* buf, int sizeofbuf) {
+        int available = client.available();
+        if (available <= 0) return;
+
+        size_t len = tcp_bridge_transfer_limit(
+            available, tcp_to_serial_queue.Free(), sizeofbuf);
+        if (len == 0) {
+            tcp_bridge_saturating_add(tcp_to_serial_full_count, 1);
+            return;
+        }
+
+        int read_len = client.read(buf, len);
+        if (read_len <= 0) return;
+        if (!tcp_to_serial_queue.Put(buf, read_len)) {
+            tcp_bridge_saturating_add(tcp_to_serial_full_count, 1);
+            return;
+        }
+        update_queue_high_water();
+        set_connected();
+    }
+
+    void drain_tcp_to_serial() {
+        int available = SERIAL.availableForWrite();
+        if (available <= 0) return;
+
+        size_t len = tcp_bridge_transfer_limit(
+            tcp_to_serial_queue.ContiguousAvailable(), available, TCP_BRIDGE_IO_BUDGET);
+        if (len == 0) return;
+
+        tcp_bridge_saturating_add(serial_write_requested_bytes, len);
+        size_t written = SERIAL.write(tcp_to_serial_queue.ReadPtr(), len);
+        if (written > len) written = len;
+        tcp_bridge_saturating_add(serial_write_written_bytes, written);
+        if (written < len) tcp_bridge_saturating_add(serial_write_partial_count, 1);
+        tcp_to_serial_queue.Consume(written);
+    }
+
+    void serial_read_to_queue(uint8_t* buf, int sizeofbuf) {
+        unsigned long tnow_ms = millis();
+        int available = SERIAL.available();
+        if (available <= 0) {
+            serial_data_received_tfirst_ms = tnow_ms;
+            return;
+        }
+
+        if (available > serial_rx_high_water) serial_rx_high_water = available;
+        if ((tnow_ms - serial_data_received_tfirst_ms) <= 10 && available <= 128) return;
+
+        serial_data_received_tfirst_ms = tnow_ms;
+        size_t len = tcp_bridge_transfer_limit(
+            available, serial_to_tcp_queue.Free(), sizeofbuf);
+        if (len == 0) {
+            tcp_bridge_saturating_add(serial_to_tcp_full_count, 1);
+            return;
+        }
+
+        int read_len = SERIAL.read(buf, len);
+        if (read_len <= 0) return;
+        if (!serial_to_tcp_queue.Put(buf, read_len)) {
+            tcp_bridge_saturating_add(serial_to_tcp_full_count, 1);
+            return;
+        }
+        update_queue_high_water();
+    }
+
+    int write_client_nonblocking(const uint8_t* buf, size_t len, size_t& attempted) {
+        attempted = 0;
+#ifdef ESP8266
+        int available = client.availableForWrite();
+        if (available <= 0) return 0;
+        if (len > (size_t)available) len = available;
+        attempted = len;
+        return client.write(buf, len);
+#else
+        int socket_fd = client.fd();
+        if (socket_fd < 0) return -1;
+        attempted = len;
+        int written = send(socket_fd, buf, len, MSG_DONTWAIT);
+        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+        if (written < 0) client.stop();
+        return written;
+#endif
+    }
+
+    void drain_serial_to_tcp() {
+        size_t len = tcp_bridge_transfer_limit(
+            serial_to_tcp_queue.ContiguousAvailable(),
+            serial_to_tcp_queue.Available(),
+            TCP_BRIDGE_IO_BUDGET);
+        if (len == 0) return;
+
+        size_t attempted = 0;
+        unsigned long started_us = micros();
+        int written = write_client_nonblocking(serial_to_tcp_queue.ReadPtr(), len, attempted);
+        uint32_t duration_us = micros() - started_us;
+        if (duration_us > tcp_write_max_duration_us) tcp_write_max_duration_us = duration_us;
+
+        tcp_bridge_saturating_add(tcp_write_requested_bytes, attempted);
+        if (written < 0) {
+            tcp_bridge_saturating_add(tcp_write_error_count, 1);
+            return;
+        }
+        if (written == 0) {
+            tcp_bridge_saturating_add(tcp_write_stall_count, 1);
+            return;
+        }
+
+        size_t written_size = written;
+        if (written_size > attempted) written_size = attempted;
+        tcp_bridge_saturating_add(tcp_write_written_bytes, written_size);
+        if (written_size < attempted) tcp_bridge_saturating_add(tcp_write_partial_count, 1);
+        serial_to_tcp_queue.Consume(written_size);
     }
 };
 tTCPHandler tcp_handler;
