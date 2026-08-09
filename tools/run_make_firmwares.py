@@ -1390,6 +1390,8 @@ def parse_arguments(argv=None):
 def target_matches_filter(target_name, target_filter):
     if target_filter == '':
         return True
+    target_name = target_name.lower()
+    target_filter = target_filter.lower()
     if target_filter.startswith('!'):
         return target_filter[1:] not in target_name
     return target_filter in target_name

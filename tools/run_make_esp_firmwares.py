@@ -238,9 +238,16 @@ def execute(args, project_dir=MLRS_PROJECT_DIR, build_dir=MLRS_PIO_BUILD_DIR,
     output_dir = Path(output_dir)
 
     all_environments = platformio_environments(project_dir)
-    if args.target and args.target not in all_environments:
+    selected_environment = next(
+        (
+            environment for environment in all_environments
+            if environment.lower() == args.target.lower()
+        ),
+        None,
+    ) if args.target else None
+    if args.target and selected_environment is None:
         raise UsageError('unknown PlatformIO environment: %s' % args.target)
-    environments = [args.target] if args.target else all_environments
+    environments = [selected_environment] if selected_environment else all_environments
 
     platformio = resolve_platformio(args.platformio)
     version = args.version or read_version(project_dir)
@@ -253,7 +260,7 @@ def execute(args, project_dir=MLRS_PROJECT_DIR, build_dir=MLRS_PIO_BUILD_DIR,
     print('environments =', len(environments), flush=True)
 
     compile_environments(
-        platformio, project_dir, build_dir, environments, args.target, args.define,
+        platformio, project_dir, build_dir, environments, selected_environment, args.define,
     )
     artifacts = validate_artifacts(build_dir, environments)
     destination = publish_artifacts(artifacts, output_dir, version, suffix)

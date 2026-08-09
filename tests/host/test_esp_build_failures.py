@@ -106,6 +106,28 @@ class EspBuildFailureTest(unittest.TestCase):
         resolve.assert_not_called()
         clean.assert_not_called()
 
+    def test_target_match_is_case_insensitive_and_uses_canonical_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = self.make_project(temp_dir, ("rx-one",))
+            build_dir = project_dir / ".pio/build"
+            output_dir = project_dir / "tools/esp-build"
+            args = self.build.parse_arguments([
+                "--target", "RX-ONE", "--version", "1.4.02", "--nopause",
+            ])
+
+            with mock.patch.object(self.build, "resolve_platformio", return_value="pio"):
+                with mock.patch.object(self.build, "version_suffix", return_value=""):
+                    with mock.patch.object(self.build, "compile_environments") as compile:
+                        with mock.patch.object(self.build, "validate_artifacts", return_value=[]):
+                            with mock.patch.object(self.build, "publish_artifacts"):
+                                self.build.execute(
+                                    args, project_dir, build_dir, output_dir,
+                                )
+
+        compile.assert_called_once_with(
+            "pio", project_dir, build_dir, ["rx-one"], "rx-one", [],
+        )
+
     def test_missing_tool_is_reported(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             missing = Path(temp_dir) / "missing-pio"

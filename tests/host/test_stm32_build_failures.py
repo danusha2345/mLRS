@@ -12,6 +12,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = REPO_ROOT / "tools/run_make_firmwares.py"
+FLASH_SCRIPT = REPO_ROOT / "tools/run_flash_stm32_linux.py"
 GLUE_HEADER = REPO_ROOT / "mLRS/Common/hal/glue.h"
 NICERF_LINKER_SCRIPTS = (
     REPO_ROOT / "mLRS/rx-diy-NiceRF-LR2021-g431kb/STM32G431KBUX_FLASH.ld",
@@ -26,10 +27,18 @@ def load_build_script():
     return module
 
 
+def load_flash_script():
+    spec = importlib.util.spec_from_file_location("run_flash_stm32_linux", FLASH_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class Stm32BuildFailureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.build = load_build_script()
+        cls.flash = load_flash_script()
 
     def test_run_checked_rejects_nonzero_exit_code(self):
         with mock.patch.object(self.build.subprocess, "call", return_value=7):
@@ -89,6 +98,25 @@ class Stm32BuildFailureTest(unittest.TestCase):
         self.assertTrue(args.nopause)
         self.assertEqual(args.version, "1.2.3")
         self.assertEqual(args.toolchain_dir, "/opt/toolchain")
+
+    def test_target_filter_is_case_insensitive(self):
+        target = "tx-Matek-MR24-30-G431KB"
+
+        self.assertTrue(self.build.target_matches_filter(target, "MATEK-MR24"))
+        self.assertFalse(self.build.target_matches_filter(target, "!mAtEk"))
+        self.assertTrue(self.build.target_matches_filter(target, "!nomad"))
+
+    def test_firmware_lookup_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            firmware_dir = Path(temp_dir)
+            matching = firmware_dir / "tx-Matek-MR24-30-G431KB.hex"
+            matching.touch()
+            (firmware_dir / "rx-nomad.hex").touch()
+
+            with mock.patch.object(self.flash, "MLRS_FIRMWARE_DIR", temp_dir):
+                matches = self.flash.find_firmware_hex("matek-mr24")
+
+        self.assertEqual(matches, [str(matching)])
 
     def test_explicit_toolchain_requires_all_programs(self):
         with tempfile.TemporaryDirectory(prefix="toolchain with spaces ") as temp_dir:
