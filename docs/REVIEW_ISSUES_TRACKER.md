@@ -63,6 +63,7 @@
 | MLRS-020 | P2 | IN_PROGRESS | Tests | Host, ESP и bridge CI добавлены; frame/hardware coverage ещё открыто | новый |
 | MLRS-021 | P2 | IMPLEMENTED | Toolchain | GCC 11.3/14.3 проходят 55/55; broad guard заменён code-validated верхней границей 14 | issue #159 |
 | MLRS-022 | P2 | IMPLEMENTED | ESP build | Portable fail-fast runner проверяет полный набор текущих artifacts | новый |
+| MLRS-023 | P1 | FIXED | CRSF passthrough | RPM/WIND conversion безопасно обрабатывает NaN и out-of-range float | upstream PR #492 |
 
 ## Подробные карточки
 
@@ -857,14 +858,16 @@ Definition of done: эти suites являются required PR checks, а hardwa
   setup, STM32 build failure propagation, атомарный IRQ handoff и recovery
   threshold, а также bounded MAVLink/MSP parsing с продолжением frame между
   вызовами;
+- passthrough sanitizer suite проверяет RPM/WIND packing, saturation,
+  one-shot publication, multi-frame IDs/length и нечисловые MAVLink values;
 - source regressions запрещают radio/SPI work в DIO ISR, fatal sync mismatch,
   очистку непрочитанных IRQ bits и бесконечные BUSY waits.
 - отдельный PR workflow запускает host suite, полную ESP matrix 32/32 и три
   AT-mode bridge variants на ESP32-C3, ESP32 Pico и ESP8266; каждый ожидаемый
   binary проверяется на наличие и ненулевой размер.
 
-Открыто: отдельные frame suites, первый реальный GitHub run/required-check
-policy и hardware/timing tests из минимальной программы выше.
+Открыто: дальнейшее frame coverage, required-check policy и hardware/timing
+tests из минимальной программы выше.
 
 ### MLRS-021 — STM32 toolchain искусственно зафиксирован на GCC 11
 
@@ -999,6 +1002,34 @@ artifacts, либо завершается non-zero до copy stage; stale `.bin
 
 Осталось до `FIXED`: тот же runner должен пройти на Windows. До этого
 platform-specific acceptance сохраняется как `IMPLEMENTED`, а не `FIXED`.
+
+### MLRS-023 — undefined conversion в RPM/WIND passthrough
+
+**Приоритет:** P1
+**Статус:** FIXED
+
+Upstream PR #492 добавил упаковку MAVLink `RPM` и `WIND` в CRSF passthrough.
+Исходная реализация сначала выполняла `roundf()`, затем преобразовывала
+результат в `int32_t`, и только после этого ограничивала диапазон. Для `NaN`,
+infinity и достаточно больших конечных float такое преобразование выходит за
+диапазон `int32_t`; host reproducer с `-fsanitize=float-cast-overflow`
+останавливался на RPM conversion.
+
+Исправление:
+
+- `NaN` RPM кодируется нулём, infinity и out-of-range RPM насыщаются до
+  `INT16_MIN..INT16_MAX` до float-to-int conversion;
+- WIND direction ограничивается wire range до преобразования, отрицательная
+  или `NaN` speed кодируется нулём, слишком большая speed насыщается;
+- [`tests/host/test_passthrough.cpp`](../tests/host/test_passthrough.cpp)
+  фиксирует normal wire packing, границы, one-shot semantics и полный
+  двухпакетный CRSF multi-frame `0x500A`/`0x500C`;
+- [`tests/host/run_passthrough_tests.sh`](../tests/host/run_passthrough_tests.sh)
+  выполняется под ASan/UBSan/float-cast-overflow и входит в общий host runner.
+
+Definition of done выполнен для code path: sanitizer reproducer устранён,
+normal RPM/WIND wire output не изменён, malformed float не вызывает undefined
+conversion.
 
 ## Исправленные или недоказанные первоначальные выводы
 

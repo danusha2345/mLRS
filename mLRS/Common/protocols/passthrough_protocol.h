@@ -814,10 +814,18 @@ bool tPassThrough::get_Rpm_0x500A(uint32_t* const data)
     pt_update[RPM_0x500A] = false;
 
     // both sensors are sent as rpm * 0.1, as signed 16 bit, the Yaapu script scales them back up
-    int32_t pt_rpm1 = roundf(rpm.rpm1 * 0.1f); // rpm -> 10 rpm // range is limited to [INT16_MIN..INT16_MAX]
-    int32_t pt_rpm2 = roundf(rpm.rpm2 * 0.1f); // rpm -> 10 rpm // range is limited to [INT16_MIN..INT16_MAX]
-    if (pt_rpm1 > INT16_MAX) pt_rpm1 = INT16_MAX; else if (pt_rpm1 < INT16_MIN) pt_rpm1 = INT16_MIN;
-    if (pt_rpm2 > INT16_MAX) pt_rpm2 = INT16_MAX; else if (pt_rpm2 < INT16_MIN) pt_rpm2 = INT16_MIN;
+    int32_t pt_rpm1 = 0;
+    int32_t pt_rpm2 = 0;
+    if (rpm.rpm1 == rpm.rpm1) { // false only for NaN
+        if (rpm.rpm1 >= (float)INT16_MAX * 10.0f) pt_rpm1 = INT16_MAX;
+        else if (rpm.rpm1 <= (float)INT16_MIN * 10.0f) pt_rpm1 = INT16_MIN;
+        else pt_rpm1 = roundf(rpm.rpm1 * 0.1f); // rpm -> 10 rpm
+    }
+    if (rpm.rpm2 == rpm.rpm2) { // false only for NaN
+        if (rpm.rpm2 >= (float)INT16_MAX * 10.0f) pt_rpm2 = INT16_MAX;
+        else if (rpm.rpm2 <= (float)INT16_MIN * 10.0f) pt_rpm2 = INT16_MIN;
+        else pt_rpm2 = roundf(rpm.rpm2 * 0.1f); // rpm -> 10 rpm
+    }
 
     *data = 0;
     pt_pack32(data, pt_rpm1, 0, 16);
@@ -845,10 +853,17 @@ bool tPassThrough::get_Wind_0x500C(uint32_t* const data)
 
     // WIND reports the direction the wind is blowing from, as atan2() result, so it is -180..180 and we wrap it
     float direction = wind.direction;
-    if (direction < 0.0f) direction += 360.0f;
+    if (!(direction == direction)) direction = 0.0f; // NaN
+    else if (direction < 0.0f) direction += 360.0f;
+    if (direction < 0.0f) direction = 0.0f;
+    else if (direction > 360.0f) direction = 360.0f;
+
+    float speed = wind.speed;
+    if (!(speed == speed) || speed < 0.0f) speed = 0.0f; // NaN or negative
+    else if (speed > 127.0f) speed = 127.0f;
 
     int32_t pt_direction = roundf(direction * (1.0f/3.0f)); // deg -> 3 deg
-    int32_t pt_speed = roundf(wind.speed * 10.0f); // m/s -> dm/s
+    int32_t pt_speed = roundf(speed * 10.0f); // m/s -> dm/s
 
     *data = 0;
     pt_pack32(data, prep_number(pt_direction, 2, 0), 0, 7);
@@ -1044,5 +1059,4 @@ bool tPassThrough::GetTelemetryFrameMulti(uint8_t* const data, uint8_t* const le
 
 
 #endif // PASSTHROUGH_PROTOCOL_H
-
 
