@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   firmware:
-    name: Host tests and 32 ESP targets
+    name: Host tests and 33 ESP targets
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -54,7 +54,7 @@ jobs:
             --version v1.4.03-ci --nopause
 
           test "$(find tools/esp-build/firmware -maxdepth 1 \
-            -type f -name '*.bin' | wc -l)" -eq 32
+            -type f -name '*.bin' | wc -l)" -eq 33
           test -z "$(find tools/esp-build/firmware -maxdepth 1 \
             -type f -name '*.bin' -size 0 -print -quit)"
 

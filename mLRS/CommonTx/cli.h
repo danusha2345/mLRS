@@ -27,7 +27,7 @@ extern tGlobalConfig Config;
 extern tSetupMetaData SetupMetaData;
 extern tSerialPorts Serials;
 extern tStats stats;
-extern tTxInfo info;
+extern tTxInfo tx_info;
 extern tTasks tasks;
 
 
@@ -307,6 +307,14 @@ class tTxCli
   public:
     void Init(void);
     void Do(void);
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+    bool ExitRequested(void)
+    {
+        bool requested = exit_requested;
+        exit_requested = false;
+        return requested;
+    }
+#endif
 
   private:
     void addc(uint8_t c);
@@ -334,6 +342,9 @@ class tTxCli
     tSerialBase* com;
 
     bool initialized;
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+    bool exit_requested;
+#endif
 
     char buf[CLI_BUF_SIZE];
     uint8_t pos;
@@ -370,6 +381,9 @@ void tTxCli::Init(void)
     com = Serials.com;
 
     initialized = (com != nullptr) ? true : false;
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+    exit_requested = false;
+#endif
 
     pos = 0;
     buf[pos] = '\0';
@@ -671,7 +685,7 @@ void tTxCli::print_device_version(void)
 
     puts("  Tx: " DEVICE_NAME ", " VERSIONONLYSTR);
     char s[48];
-    if (info.WirelessDeviceName_cli(s)) {
+    if (tx_info.WirelessDeviceName_cli(s)) {
         puts(", ");
         puts(s);
     }
@@ -777,7 +791,9 @@ void tTxCli::print_help_do(void)
 #else
         case 16: break;
 #endif
-#ifdef USE_ESP_WIFI_BRIDGE
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+        case 17: putsn("  exit            -> switch UART to serial data mode"); break;
+#elif defined USE_ESP_WIFI_BRIDGE
         case 17: putsn("  esppt           -> enter serial passthrough"); break;
         case 18: putsn("  espboot         -> reboot ESP and enter serial passthrough"); break;
   #ifdef USE_ESP_WIFI_BRIDGE_RST_GPIO0
@@ -922,6 +938,14 @@ bool rx_param_changed;
             putsn("  starts streaming stats");
             putsn("  send any character to stop");
 
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+        } else
+        if (is_cmd("exit")) {
+            putsn("  switching UART to serial data mode");
+            com->flush();
+            exit_requested = true;
+#endif
+
         //-- miscellaneous
         } else
         if (is_cmd("listfreqs")) {
@@ -948,7 +972,7 @@ bool rx_param_changed;
         } else
         if (is_cmd("espname")) {
             char s[48];
-            if (info.WirelessDeviceName_cli(s)) {
+            if (tx_info.WirelessDeviceName_cli(s)) {
                 puts("  ");putsn(s);
             } else {
                 putsn("  unknown (restart tx module)");
@@ -1013,6 +1037,3 @@ bool rx_param_changed;
 
 
 #endif // TX_CLI_H
-
-
-

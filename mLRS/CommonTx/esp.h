@@ -470,16 +470,16 @@ void tTxEspWifiBridge::esp_get_info(void)
 char s[ESP_CMDRES_LEN+2];
 uint8_t len;
 
-    info.wireless.device_name[0] = '\0';
-    info.wireless.device_id = 0;
+    tx_info.wireless.device_name[0] = '\0';
+    tx_info.wireless.device_id = 0;
     if (version >= 10307) { // not available before v1.3.07
         esp_read("AT+WIFIDEVICENAME=?", s, &len);
         s[len-2] = '\0';
         if (len > 22) {
-            strncpy(info.wireless.device_name, s + 18, sizeof(info.wireless.device_name)-1);
+            strncpy(tx_info.wireless.device_name, s + 18, sizeof(tx_info.wireless.device_name)-1);
         }
-        if (strlen(info.wireless.device_name) > 9 && !strncmp(info.wireless.device_name, "mLRS-", 5)) {
-            info.wireless.device_id = atoi(info.wireless.device_name + 5);
+        if (strlen(tx_info.wireless.device_name) > 9 && !strncmp(tx_info.wireless.device_name, "mLRS-", 5)) {
+            tx_info.wireless.device_id = atoi(tx_info.wireless.device_name + 5);
         }
     }
 }
@@ -750,6 +750,5 @@ ESP_DBG(if (esp_read("AT+NAME=?", s, &len)) { dbg.puts("!ALL GOOD!\r\n"); } else
 #endif // USE_ESP_WIFI_BRIDGE
 
 #endif // TX_ESP_H
-
 
 

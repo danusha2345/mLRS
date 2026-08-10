@@ -55,11 +55,6 @@ static portMUX_TYPE esp32_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static bool systick_millis_initialized = false;
 #endif
 
-#define CLOCK_CNT_1MS             100 // 10us interval 10us x 100 = 1000us        
-
-volatile uint32_t CNT_10us = 0;
-volatile uint32_t MS_C = 0;
-
 IRQHANDLER(
 void CLOCK_IRQHandler(void)
 {
@@ -69,9 +64,6 @@ void CLOCK_IRQHandler(void)
 
 void systick_millis_init(void)
 {
-    CNT_10us = 0;
-    MS_C = CLOCK_CNT_1MS;
-
     // initialize the timer
 #ifdef ESP32
     if (systick_millis_initialized) return;
@@ -87,7 +79,7 @@ void systick_millis_init(void)
 #elif defined ESP8266
     timer1_attachInterrupt(CLOCK_IRQHandler); 
     timer1_enable(TIM_DIV16, TIM_EDGE, TIM_LOOP);
-    timer1_write(50); // 5 MHz (5 ticks/us - 1677721.4 us max), 50 ticks = 10us
+    timer1_write(5000); // 5 MHz (5 ticks/us), 5000 ticks = 1 ms
 #endif
 }
 

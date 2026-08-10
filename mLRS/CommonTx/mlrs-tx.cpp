@@ -132,7 +132,7 @@ tTDiversity tdiversity;
 tReceiveArq rarq;
 tChannelOrder channelOrder(tChannelOrder::DIRECTION_TX_TO_MLRS);
 tConfigId config_id;
-tTxInfo info;
+tTxInfo tx_info;
 tTxCli cli;
 tTasks tasks;
 
@@ -206,6 +206,16 @@ tWhileTransmit whileTransmit;
 void tWhileTransmit::handle_once(void)
 {
     cli.Do();
+
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+    if (cli.ExitRequested()) {
+        Serials.ser_or_com_set_to_serial(Config.SerialBaudrate);
+        mavlink.Init(&mbridge);
+        msp.Init();
+        sx_serial.Init(&mbridge);
+        cli.Init();
+    }
+#endif
 
 #ifdef USE_DISPLAY
     uint32_t tnow_ms = millis32();
@@ -831,7 +841,7 @@ RESTARTCONTROLLER
 
     // startup sign of life
     leds.Init();
-    info.Init();
+    tx_info.Init();
 
     // start up sx
     if (!sx.isOk()) { FAILALWAYS(BLINK_RD_GR_OFF, "Sx not ok"); } // fail!

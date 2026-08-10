@@ -162,6 +162,9 @@ typedef struct
 
 #ifdef USE_COM_ON_SERIAL
     tSerialBase* ser_or_com_set_to_com(void);
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+    tSerialBase* ser_or_com_set_to_serial(uint32_t baud);
+#endif
 #endif
 } tSerialPorts;
 
@@ -191,6 +194,16 @@ tSerialBase* tSerialPorts::ser_or_com_set_to_com(void)
     com = &uartb_port;
     return com;
 }
+
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+tSerialBase* tSerialPorts::ser_or_com_set_to_serial(uint32_t baud)
+{
+    serial = &uartb_port;
+    com = com_port();
+    serial->SetBaudRate(baud);
+    return serial;
+}
+#endif
 #endif
 
 // 2\1      | SERIAL          | WBRIDGE/SERIAL2 | COM                | MBRIDGE

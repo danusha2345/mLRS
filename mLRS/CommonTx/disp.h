@@ -44,7 +44,7 @@ extern tGlobalConfig Config;
 extern tSetupMetaData SetupMetaData;
 extern tStats stats;
 extern tGDisplay gdisp;
-extern tTxInfo info;
+extern tTxInfo tx_info;
 extern tTasks tasks;
 
 
@@ -891,7 +891,7 @@ char s[32];
     gdisp_puts(VERSIONONLYSTR);
 
 #if !(defined USE_ESP_WIFI_BRIDGE_CONFIGURE || defined USE_HC04_MODULE) // if defined, it is shown on Main/5 subpage
-    if (info.WirelessDeviceName_disp(s)) {
+    if (tx_info.WirelessDeviceName_disp(s)) {
         gdisp_setcurXY(60, 1 * 10 + DISP_CONTENT_Y_BASE);
         gdisp_puts(s);
     }
@@ -916,7 +916,7 @@ uint8_t yofs = 0;
     draw_header("Main/5");
 
     gdisp_setcurXY(0, 0 * 10 + DISP_CONTENT_Y_BASE);
-    if (!info.WirelessDeviceName_cli(s)) { // e.g., TxSerDest not set to correct serial
+    if (!tx_info.WirelessDeviceName_cli(s)) { // e.g., TxSerDest not set to correct serial
         gdisp_puts("wireless bridge");
         gdisp_setcurXY(0, 1 * 10 + DISP_CONTENT_Y_BASE);
         gdisp_puts("not available/enabled");

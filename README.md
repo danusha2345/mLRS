@@ -156,6 +156,12 @@ ESP targets can be built directly with PlatformIO, for example:
 pio run -e rx-generic-2400
 ```
 
+Экспериментальный пример использования обычного ELRS 868/915 MHz приёмника на
+ESP8285 + SX1276 в роли передатчика собирается как
+`tx-generic-900-rx-as-tx`. Проверенный pinout, ограничения, порядок прошивки и
+результаты аппаратного full-duplex теста описаны в
+[`docs/GENERIC_ELRS_900_RX_AS_TX.md`](docs/GENERIC_ELRS_900_RX_AS_TX.md).
+
 Для fail-fast сборки с проверкой и публикацией `firmware.bin` используйте
 portable runner. Он находит `pio`/`platformio` через `PATH`; нестандартный путь
 можно передать через `--platformio`:
@@ -182,7 +188,7 @@ Wireless bridge имеет отдельную pinned AT-mode matrix, котор�
 pio run --project-dir esp/mlrs-wireless-bridge
 ```
 
-Те же 32 firmware targets, host regressions и три bridge variants запускаются
+Те же 33 firmware targets, host regressions и три bridge variants запускаются
 workflow `ESP builds` на pull request и push в `main`.
 
 The command-line setup above and the dual-toolchain build have been validated

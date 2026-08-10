@@ -32,7 +32,7 @@ class EspCiSourceTests(unittest.TestCase):
         self.assertIn("intelhex==2.3.0", self.tool_requirements)
         self.assertIn("tools/run_make_esp_firmwares.py", self.workflow)
         self.assertIn("--version v1.4.03-ci --nopause", self.workflow)
-        self.assertIn('wc -l)" -eq 32', self.workflow)
+        self.assertIn('wc -l)" -eq 33', self.workflow)
 
     def test_bridge_job_builds_all_at_mode_variants(self):
         for environment in (

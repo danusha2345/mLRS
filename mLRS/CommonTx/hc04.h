@@ -250,8 +250,8 @@ uint8_t len;
     strcat(ok_device_name, u16toBCD_s(device_id));
     strcat(ok_device_name, "-BT");
 
-    info.wireless.device_id = device_id;
-    strcpy(info.wireless.device_name, ok_device_name + 8); // strip off "OK+NAME="
+    tx_info.wireless.device_id = device_id;
+    strcpy(tx_info.wireless.device_name, ok_device_name + 8); // strip off "OK+NAME="
 
     for (uint8_t baud_idx = 0; baud_idx < 7; baud_idx++) {
         ser->SetBaudRate(bauds[baud_idx]);
@@ -280,6 +280,5 @@ uint8_t len;
 #endif // USE_HC04_MODULE
 
 #endif // TX_HC04_H
-
 
 

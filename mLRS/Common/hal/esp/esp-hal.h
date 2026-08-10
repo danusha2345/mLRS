@@ -21,6 +21,10 @@
 #include "rx-hal-generic-900-pa-esp8285.h"
 #endif
 
+#ifdef TX_ELRS_GENERIC_900_RX_AS_TX_ESP8285
+#include "tx-hal-generic-900-rx-as-tx-esp8285.h"
+#endif
+
 #ifdef RX_ELRS_GENERIC_900_TD_PA_ESP32
 #include "rx-hal-generic-900-td-pa-esp32.h"
 #endif
@@ -162,4 +166,3 @@
 #ifdef TX_ELRS_FLYSKY_INTERNAL_PA01_2400_ESP32S3
 #include "tx-hal-flysky-int-pa01-2400-esp32s3.h"
 #endif
-
